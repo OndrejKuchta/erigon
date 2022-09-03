@@ -40,9 +40,9 @@ scrape_configs:
           - 192.168.255.138:6061
           - 192.168.255.138:6062
    
- #  - job_name: ethereum-metrics-exporter # example, how to connect prometheus to Erigon
- #   metrics_path: /metrics
- #   scheme: http
-#    static_configs:
- #     - targets:
-#          - 0.0.0.0:8001 # If Erigon runned by default docker-compose, then it's available on `erigon` host.
+  - job_name: ethereum-metrics-exporter # example, how to connect prometheus to Erigon
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - 0.0.0.0:8001 # If Erigon runned by default docker-compose, then it's available on `erigon` host.
