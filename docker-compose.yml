@@ -67,13 +67,14 @@ services:
   prysm:
     image: gcr.io/prysmaticlabs/prysm/beacon-chain:stable
     user: ${DOCKER_UID:-1000}:${DOCKER_GID:-1000} # Uses erigon user from Dockerfile
-    command: --datadir=/home/erigon/.local/share/erigon --rpc-host=0.0.0.0 --monitoring-host=0.0.0.0 --execution-endpoint=http://erigon:8551 --jwt-secret=/home/erigon/.local/share/erigon/jwt.hex --accept-terms-of-use --genesis-state=/genesis.ssz --grpc-gateway-host="0.0.0.0" --grpc-gateway-corsdomain='*' --checkpoint-sync-url=https://goerli.checkpoint-sync.ethdevops.io --genesis-beacon-api-url=https://goerli.checkpoint-sync.ethdevops.io
+    command: --datadir=/prysm-data --rpc-host=0.0.0.0 --monitoring-host=0.0.0.0 --execution-endpoint=http://erigon:8551 --jwt-secret=/home/erigon/.local/share/erigon/jwt.hex --accept-terms-of-use --genesis-state=/genesis.ssz --grpc-gateway-host="0.0.0.0" --grpc-gateway-corsdomain='*' --checkpoint-sync-url=https://goerli.checkpoint-sync.ethdevops.io --genesis-beacon-api-url=https://goerli.checkpoint-sync.ethdevops.io
     ports:
       - "3500:3500"
       - "13000:13000"
       - "12000:12000/udp"
     volumes:
       - ${XDG_DATA_HOME:-~/.local/share}/erigon:/home/erigon/.local/share/erigon
+      - ${XDG_DATA_HOME:-~/.local/share}/prysm-data:/prysm-data
     depends_on:
       - "erigon"
     restart: unless-stopped
