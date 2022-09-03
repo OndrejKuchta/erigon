@@ -81,7 +81,7 @@ services:
     mem_swappiness: 0
     
   ethereum-metrics-exporter:
-    image: samcm/ethereum-metrics-exporter
+    image: samcm/ethereum-metrics-exporter:latest
     user: ${DOCKER_UID:-1000}:${DOCKER_GID:-1000} # Uses erigon user from Dockerfile
     command: --consensus-url=http://localhost:5052 --execution-url=http://localhost:8545
     ports: [ "9090:9090" ]
