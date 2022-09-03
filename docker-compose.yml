@@ -64,8 +64,15 @@ services:
     ports: [ "8545:8545" ]
 
 
-
-
+  prysm:
+    image: gcr.io/prysmaticlabs/prysm/beacon-chain:stable
+    user: ${DOCKER_UID:-1000}:${DOCKER_GID:-1000} # Uses erigon user from Dockerfile
+    command: --datadir=/prysm-data --rpc-host=0.0.0.0 --monitoring-host=0.0.0.0 --execution-endpoint=erigon:9090
+    ports: [ "4000:4000", "13000:13000", "12000:12000/udp" ]
+    volumes:
+            - ${XDG_DATA_HOME:-~/.local/share}/prysm:/home/prysm/.local/share/prysm
+    restart: unless-stopped
+    
   prometheus:
     image: prom/prometheus:v2.37.0
     user: ${DOCKER_UID:-1000}:${DOCKER_GID:-1000} # Uses erigon user from Dockerfile
