@@ -472,7 +472,9 @@ func NewInMemoryExecution(ctx context.Context, db kv.RwDB, cfg *ethconfig.Config
 				blockReader,
 				dirs.Tmp,
 				notifications.Events,
-				nil, nil), stagedsync.StageBodiesCfg(
+				nil, nil,
+			),
+			stagedsync.StageBodiesCfg(
 				db,
 				controlServer.Bd,
 				controlServer.SendBodyRequest,
@@ -503,7 +505,7 @@ func NewInMemoryExecution(ctx context.Context, db kv.RwDB, cfg *ethconfig.Config
 				blockReader,
 				controlServer.Hd,
 				cfg.Genesis,
-				1,
+				cfg.Sync.ExecWorkerCount,
 				txNums,
 				agg,
 			),

@@ -165,10 +165,13 @@ func executeBlock(
 	var stateSyncReceipt *types.ReceiptForStorage
 	var execRs *core.EphemeralExecResult
 	_, isPoSa := cfg.engine.(consensus.PoSA)
+	isBor := cfg.chainConfig.Bor != nil
 	getHashFn := core.GetHashFn(block.Header(), getHeader)
 
 	if isPoSa {
 		execRs, err = core.ExecuteBlockEphemerallyForBSC(cfg.chainConfig, &vmConfig, getHashFn, cfg.engine, block, stateReader, stateWriter, epochReader{tx: tx}, chainReader{config: cfg.chainConfig, tx: tx, blockReader: cfg.blockReader}, false, getTracer)
+	} else if isBor {
+		execRs, err = core.ExecuteBlockEphemerallyBor(cfg.chainConfig, &vmConfig, getHashFn, cfg.engine, block, stateReader, stateWriter, epochReader{tx: tx}, chainReader{config: cfg.chainConfig, tx: tx, blockReader: cfg.blockReader}, false, getTracer)
 	} else {
 		execRs, err = core.ExecuteBlockEphemerally(cfg.chainConfig, &vmConfig, getHashFn, cfg.engine, block, stateReader, stateWriter, epochReader{tx: tx}, chainReader{config: cfg.chainConfig, tx: tx, blockReader: cfg.blockReader}, false, getTracer)
 	}
@@ -297,6 +300,10 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 	if to > s.BlockNumber+16 {
 		log.Info(fmt.Sprintf("[%s] Blocks execution", logPrefix), "from", s.BlockNumber, "to", to)
 	}
+	if workersCount > 1 {
+		tx.Rollback()
+		tx = nil
+	}
 
 	rs := state.NewState22()
 	if err := Exec22(execCtx, s, workersCount, cfg.db, tx, rs,
@@ -305,7 +312,7 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 		cfg.chainConfig, cfg.genesis, initialCycle); err != nil {
 		return err
 	}
-	if !useExternalTx {
+	if !useExternalTx && tx != nil {
 		if err = tx.Commit(); err != nil {
 			return err
 		}
