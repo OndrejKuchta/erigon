@@ -258,20 +258,19 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 	fmt.Printf("recon to : %t, txn=%d\n", initialCycle, cfg.agg.EndTxNumMinimax())
 	allSnapshots := cfg.blockReader.(WithSnapshots).Snapshots()
 	if initialCycle {
-		_, reconstituteToBlock := cfg.txNums.Find(cfg.agg.EndTxNumMinimax())
-		reconDbPath := path.Join(cfg.dirs.DataDir, "recondb")
-		os.RemoveAll(reconDbPath)
-		dir.MustExist(reconDbPath)
-		limiterB := semaphore.NewWeighted(int64(runtime.NumCPU() + 1))
-		reconDB, err := kv2.NewMDBX(log.New()).Path(reconDbPath).RoTxsLimiter(limiterB).WriteMap().WithTableCfg(func(defaultBuckets kv.TableCfg) kv.TableCfg { return kv.ReconTablesCfg }).Open()
-		if err != nil {
-			return err
-		}
-
-		if reconstituteToBlock > s.BlockNumber {
+		if found, reconstituteToBlock := cfg.txNums.Find(cfg.agg.EndTxNumMinimax()); found && reconstituteToBlock > s.BlockNumber {
+			reconDbPath := path.Join(cfg.dirs.DataDir, "recondb")
+			os.RemoveAll(reconDbPath)
+			dir.MustExist(reconDbPath)
+			limiterB := semaphore.NewWeighted(int64(runtime.NumCPU() + 1))
+			reconDB, err := kv2.NewMDBX(log.New()).Path(reconDbPath).RoTxsLimiter(limiterB).WriteMap().WithTableCfg(func(defaultBuckets kv.TableCfg) kv.TableCfg { return kv.ReconTablesCfg }).Open()
+			if err != nil {
+				return err
+			}
 			if err := Recon22(execCtx, s, cfg.dirs, workersCount, cfg.db, reconDB, cfg.blockReader, allSnapshots, cfg.txNums, log.New(), cfg.agg, cfg.engine, cfg.chainConfig, cfg.genesis); err != nil {
 				return err
 			}
+			os.RemoveAll(reconDbPath)
 		}
 	}
 
@@ -687,7 +686,7 @@ func unwindExecutionStage(u *UnwindState, s *StageState, tx kv.RwTx, ctx context
 			copy(address[:], k[:length.Addr])
 			incarnation = binary.BigEndian.Uint64(k[length.Addr:])
 			copy(location[:], k[length.Addr+length.Incarnation:])
-			fmt.Printf("un ch st: %x, %d, %x, %x\n", address, incarnation, location, common.Copy(v))
+			log.Debug(fmt.Sprintf("un ch st: %x, %d, %x, %x\n", address, incarnation, location, common.Copy(v)))
 			accumulator.ChangeStorage(address, incarnation, location, common.Copy(v))
 		}
 		if len(v) > 0 {
@@ -774,6 +773,9 @@ func PruneExecutionStage(s *PruneState, tx kv.RwTx, cfg ExecuteBlockCfg, ctx con
 
 	if cfg.prune.Receipts.Enabled() {
 		if err = rawdb.PruneTable(tx, kv.Receipts, cfg.prune.Receipts.PruneTo(s.ForwardProgress), ctx, math.MaxInt32); err != nil {
+			return err
+		}
+		if err = rawdb.PruneTable(tx, kv.BorReceipts, cfg.prune.Receipts.PruneTo(s.ForwardProgress), ctx, math.MaxUint32); err != nil {
 			return err
 		}
 		// LogIndex.Prune will read everything what not pruned here

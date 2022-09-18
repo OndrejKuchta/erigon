@@ -37,8 +37,29 @@ type regeneratePedersenCodeJob struct {
 type regeneratePedersenCodeOut struct {
 	chunks     [][]byte
 	address    common.Address
-	chunksKeys []common.Hash
+	chunksKeys [][]byte
 	codeSize   int
+}
+
+type regenerateIncrementalPedersenAccountsJob struct {
+	// Update
+	address       common.Address
+	account       accounts.Account
+	code          []byte // New code
+	absentInState bool
+	// keys to be deleted
+	badKeys [][]byte
+}
+
+type regenerateIncrementalPedersenAccountsOut struct {
+	address       common.Address
+	versionHash   []byte
+	account       accounts.Account
+	codeSize      uint64
+	codeChunks    [][]byte
+	codeKeys      [][]byte
+	absentInState bool
+	badKeys       [][]byte
 }
 
 const batchSize = 10000
@@ -110,7 +131,7 @@ func pedersenCodeWorker(ctx context.Context, logPrefix string, in chan *regenera
 		}
 
 		var chunks [][]byte
-		var chunkKeys []common.Hash
+		var chunkKeys [][]byte
 		if job.code == nil || len(job.code) == 0 {
 			out <- &regeneratePedersenCodeOut{
 				chunks:     chunks,
@@ -129,13 +150,13 @@ func pedersenCodeWorker(ctx context.Context, logPrefix string, in chan *regenera
 			chunks = append(chunks, common.CopyBytes(chunkedCode[i:i+32]))
 			if currentKey[31]+offset < currentKey[31] || offsetOverflow {
 				currentKey = vtree.GetTreeKeyCodeChunk(job.address[:], uint256.NewInt(uint64(i)/32))
-				chunkKeys = append(chunkKeys, common.BytesToHash(currentKey))
+				chunkKeys = append(chunkKeys, common.CopyBytes(currentKey))
 				offset = 1
 				offsetOverflow = false
 			} else {
 				codeKey := common.CopyBytes(currentKey)
 				codeKey[31] += offset
-				chunkKeys = append(chunkKeys, common.BytesToHash(codeKey))
+				chunkKeys = append(chunkKeys, common.CopyBytes(codeKey))
 				offset += 1
 				// If offset overflows, handle it.
 				offsetOverflow = offset == 0
@@ -146,6 +167,67 @@ func pedersenCodeWorker(ctx context.Context, logPrefix string, in chan *regenera
 			chunksKeys: chunkKeys,
 			codeSize:   len(job.code),
 			address:    job.address,
+		}
+	}
+}
+
+func incrementalAccountWorker(ctx context.Context, logPrefix string, in chan *regenerateIncrementalPedersenAccountsJob, out chan *regenerateIncrementalPedersenAccountsOut) {
+	var job *regenerateIncrementalPedersenAccountsJob
+	var ok bool
+	for {
+		select {
+		case job, ok = <-in:
+			if !ok {
+				return
+			}
+			if job == nil {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+		if job.absentInState {
+			out <- &regenerateIncrementalPedersenAccountsOut{
+				absentInState: job.absentInState,
+				badKeys:       job.badKeys,
+			}
+			continue
+		}
+		versionKey := common.BytesToHash(vtree.GetTreeKeyVersion(job.address[:]))
+
+		var chunks [][]byte
+		var chunkKeys [][]byte
+		// Chunkify contract code and build keys for each chunks and insert them in the tree
+		chunkedCode := vtree.ChunkifyCode(job.code)
+		offset := byte(0)
+		offsetOverflow := false
+		currentKey := vtree.GetTreeKeyCodeChunk(job.address[:], uint256.NewInt(0))
+		// Write code chunks
+		for i := 0; i < len(chunkedCode); i += 32 {
+			chunks = append(chunks, common.CopyBytes(chunkedCode[i:i+32]))
+			codeKey := common.CopyBytes(currentKey)
+			if currentKey[31]+offset < currentKey[31] || offsetOverflow {
+				currentKey = vtree.GetTreeKeyCodeChunk(job.address[:], uint256.NewInt(uint64(i)/32))
+				chunkKeys = append(chunkKeys, codeKey)
+				offset = 1
+				offsetOverflow = false
+			} else {
+				codeKey[31] += offset
+				chunkKeys = append(chunkKeys, codeKey)
+				offset += 1
+				// If offset overflows, handle it.
+				offsetOverflow = offset == 0
+			}
+		}
+		out <- &regenerateIncrementalPedersenAccountsOut{
+			versionHash:   versionKey[:],
+			account:       job.account,
+			codeSize:      uint64(len(job.code)),
+			codeChunks:    chunks,
+			codeKeys:      chunkKeys,
+			absentInState: job.absentInState,
+			badKeys:       job.badKeys,
+			address:       job.address,
 		}
 	}
 }

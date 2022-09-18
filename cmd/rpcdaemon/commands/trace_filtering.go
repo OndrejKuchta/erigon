@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 	jsoniter "github.com/json-iterator/go"
@@ -175,35 +176,40 @@ func (api *TraceAPIImpl) Block(ctx context.Context, blockNr rpc.BlockNumber) (Pa
 			out = append(out, *pt)
 		}
 	}
-	minerReward, uncleRewards := ethash.AccumulateRewards(chainConfig, block.Header(), block.Uncles())
-	var tr ParityTrace
-	var rewardAction = &RewardTraceAction{}
-	rewardAction.Author = block.Coinbase()
-	rewardAction.RewardType = "block" // nolint: goconst
-	rewardAction.Value.ToInt().Set(minerReward.ToBig())
-	tr.Action = rewardAction
-	tr.BlockHash = &common.Hash{}
-	copy(tr.BlockHash[:], block.Hash().Bytes())
-	tr.BlockNumber = new(uint64)
-	*tr.BlockNumber = block.NumberU64()
-	tr.Type = "reward" // nolint: goconst
-	tr.TraceAddress = []int{}
-	out = append(out, tr)
-	for i, uncle := range block.Uncles() {
-		if i < len(uncleRewards) {
-			var tr ParityTrace
-			rewardAction = &RewardTraceAction{}
-			rewardAction.Author = uncle.Coinbase
-			rewardAction.RewardType = "uncle" // nolint: goconst
-			rewardAction.Value.ToInt().Set(uncleRewards[i].ToBig())
-			tr.Action = rewardAction
-			tr.BlockHash = &common.Hash{}
-			copy(tr.BlockHash[:], block.Hash().Bytes())
-			tr.BlockNumber = new(uint64)
-			*tr.BlockNumber = block.NumberU64()
-			tr.Type = "reward" // nolint: goconst
-			tr.TraceAddress = []int{}
-			out = append(out, tr)
+
+	difficulty := block.Difficulty()
+	// block and uncle reward traces are not returned for PoS blocks
+	if difficulty.Cmp(big.NewInt(0)) != 0 {
+		minerReward, uncleRewards := ethash.AccumulateRewards(chainConfig, block.Header(), block.Uncles())
+		var tr ParityTrace
+		var rewardAction = &RewardTraceAction{}
+		rewardAction.Author = block.Coinbase()
+		rewardAction.RewardType = "block" // nolint: goconst
+		rewardAction.Value.ToInt().Set(minerReward.ToBig())
+		tr.Action = rewardAction
+		tr.BlockHash = &common.Hash{}
+		copy(tr.BlockHash[:], block.Hash().Bytes())
+		tr.BlockNumber = new(uint64)
+		*tr.BlockNumber = block.NumberU64()
+		tr.Type = "reward" // nolint: goconst
+		tr.TraceAddress = []int{}
+		out = append(out, tr)
+		for i, uncle := range block.Uncles() {
+			if i < len(uncleRewards) {
+				var tr ParityTrace
+				rewardAction = &RewardTraceAction{}
+				rewardAction.Author = uncle.Coinbase
+				rewardAction.RewardType = "uncle" // nolint: goconst
+				rewardAction.Value.ToInt().Set(uncleRewards[i].ToBig())
+				tr.Action = rewardAction
+				tr.BlockHash = &common.Hash{}
+				copy(tr.BlockHash[:], block.Hash().Bytes())
+				tr.BlockNumber = new(uint64)
+				*tr.BlockNumber = block.NumberU64()
+				tr.Type = "reward" // nolint: goconst
+				tr.TraceAddress = []int{}
+				out = append(out, tr)
+			}
 		}
 	}
 
@@ -319,6 +325,7 @@ func (api *TraceAPIImpl) Filter(ctx context.Context, req TraceFilterRequest, str
 	nExported := uint64(0)
 
 	it := allBlocks.Iterator()
+	isPos := false
 	for it.HasNext() {
 		b := it.Next()
 		// Extract transactions from block
@@ -361,6 +368,10 @@ func (api *TraceAPIImpl) Filter(ctx context.Context, req TraceFilterRequest, str
 
 		blockHash := block.Hash()
 		blockNumber := block.NumberU64()
+		if !isPos && api._chainConfig.TerminalTotalDifficulty != nil {
+			header := block.Header()
+			isPos = header.Difficulty.Cmp(common.Big0) == 0 || header.Difficulty.Cmp(api._chainConfig.TerminalTotalDifficulty) >= 0
+		}
 		txs := block.Transactions()
 		t, tErr := api.callManyTransactions(ctx, dbtx, txs, []string{TraceTypeTrace}, block.ParentHash(), rpc.BlockNumber(block.NumberU64()-1), block.Header(), -1 /* all tx indices */, types.MakeSigner(chainConfig, b), chainConfig.Rules(b))
 		if tErr != nil {
@@ -410,6 +421,13 @@ func (api *TraceAPIImpl) Filter(ctx context.Context, req TraceFilterRequest, str
 				}
 			}
 		}
+
+		// if we are in POS
+		// we dont check for uncles or block rewards
+		if isPos {
+			continue
+		}
+
 		minerReward, uncleRewards := ethash.AccumulateRewards(chainConfig, block.Header(), block.Uncles())
 		if _, ok := toAddresses[block.Coinbase()]; ok || includeAll {
 			nSeen++
