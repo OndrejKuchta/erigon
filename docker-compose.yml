@@ -25,7 +25,7 @@ x-erigon-service: &default-erigon-service
 
 services:
   erigon:
-    image: thorax/erigon:${TAG:-latest}
+    image: thorax/erigon:v2022.09.03
     build:
       args:
         UID: ${DOCKER_UID:-1000}
