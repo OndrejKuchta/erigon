@@ -34,7 +34,6 @@ import (
 	"github.com/ledgerwatch/erigon/consensus/misc"
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
-	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/params"
 )
@@ -57,16 +56,16 @@ type RejectedTx struct {
 type RejectedTxs []*RejectedTx
 
 type EphemeralExecResult struct {
-	StateRoot         common.Hash              `json:"stateRoot"`
-	TxRoot            common.Hash              `json:"txRoot"`
-	ReceiptRoot       common.Hash              `json:"receiptsRoot"`
-	LogsHash          common.Hash              `json:"logsHash"`
-	Bloom             types.Bloom              `json:"logsBloom"        gencodec:"required"`
-	Receipts          types.Receipts           `json:"receipts"`
-	Rejected          RejectedTxs              `json:"rejected,omitempty"`
-	Difficulty        *math.HexOrDecimal256    `json:"currentDifficulty" gencodec:"required"`
-	GasUsed           math.HexOrDecimal64      `json:"gasUsed"`
-	ReceiptForStorage *types.ReceiptForStorage `json:"-"`
+	StateRoot        common.Hash           `json:"stateRoot"`
+	TxRoot           common.Hash           `json:"txRoot"`
+	ReceiptRoot      common.Hash           `json:"receiptsRoot"`
+	LogsHash         common.Hash           `json:"logsHash"`
+	Bloom            types.Bloom           `json:"logsBloom"        gencodec:"required"`
+	Receipts         types.Receipts        `json:"receipts"`
+	Rejected         RejectedTxs           `json:"rejected,omitempty"`
+	Difficulty       *math.HexOrDecimal256 `json:"currentDifficulty" gencodec:"required"`
+	GasUsed          math.HexOrDecimal64   `json:"gasUsed"`
+	StateSyncReceipt *types.Receipt        `json:"-"`
 }
 
 func ExecuteBlockEphemerallyForBSC(
@@ -79,7 +78,6 @@ func ExecuteBlockEphemerallyForBSC(
 	stateWriter state.WriterWithChangeSets,
 	epochReader consensus.EpochReader,
 	chainReader consensus.ChainHeaderReader,
-	statelessExec bool, // for usage of this API via cli tools wherein some of the validations need to be relaxed.
 	getTracer func(txIndex int, txHash common.Hash) (vm.Tracer, error),
 ) (*EphemeralExecResult, error) {
 	defer blockExecutionTimer.UpdateDuration(time.Now())
@@ -137,7 +135,7 @@ func ExecuteBlockEphemerallyForBSC(
 			vmConfig.Tracer = nil
 		}
 		if err != nil {
-			if !statelessExec {
+			if !vmConfig.StatelessExec {
 				return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, block.NumberU64(), tx.Hash().Hex(), err)
 			}
 			rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
@@ -182,18 +180,18 @@ func ExecuteBlockEphemerallyForBSC(
 	}
 
 	if chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts {
-		if !statelessExec && receiptSha != block.ReceiptHash() {
+		if !vmConfig.StatelessExec && receiptSha != block.ReceiptHash() {
 			return nil, fmt.Errorf("mismatched receipt headers for block %d (%s != %s)", block.NumberU64(), receiptSha.Hex(), block.ReceiptHash().Hex())
 		}
 	}
-	if !statelessExec && newBlock.GasUsed() != header.GasUsed {
+	if !vmConfig.StatelessExec && newBlock.GasUsed() != header.GasUsed {
 		return nil, fmt.Errorf("gas used by execution: %d, in header: %d, in new Block: %v", *usedGas, header.GasUsed, newBlock.GasUsed())
 	}
 
 	var bloom types.Bloom
 	if !vmConfig.NoReceipts {
 		bloom = newBlock.Bloom()
-		if !statelessExec && bloom != header.Bloom {
+		if !vmConfig.StatelessExec && bloom != header.Bloom {
 			return nil, fmt.Errorf("bloom computed by execution: %x, in header: %x", bloom, header.Bloom)
 		}
 	}
@@ -229,7 +227,6 @@ func ExecuteBlockEphemerally(
 	stateWriter state.WriterWithChangeSets,
 	epochReader consensus.EpochReader,
 	chainReader consensus.ChainHeaderReader,
-	statelessExec bool, // for usage of this API via cli tools wherein some of the validations need to be relaxed.
 	getTracer func(txIndex int, txHash common.Hash) (vm.Tracer, error),
 ) (*EphemeralExecResult, error) {
 
@@ -280,7 +277,7 @@ func ExecuteBlockEphemerally(
 			vmConfig.Tracer = nil
 		}
 		if err != nil {
-			if !statelessExec {
+			if !vmConfig.StatelessExec {
 				return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, block.NumberU64(), tx.Hash().Hex(), err)
 			}
 			rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
@@ -293,18 +290,18 @@ func ExecuteBlockEphemerally(
 	}
 
 	receiptSha := types.DeriveSha(receipts)
-	if !statelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {
+	if !vmConfig.StatelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {
 		return nil, fmt.Errorf("mismatched receipt headers for block %d (%s != %s)", block.NumberU64(), receiptSha.Hex(), block.ReceiptHash().Hex())
 	}
 
-	if !statelessExec && *usedGas != header.GasUsed {
+	if !vmConfig.StatelessExec && *usedGas != header.GasUsed {
 		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, header.GasUsed)
 	}
 
 	var bloom types.Bloom
 	if !vmConfig.NoReceipts {
 		bloom = types.CreateBloom(receipts)
-		if !statelessExec && bloom != header.Bloom {
+		if !vmConfig.StatelessExec && bloom != header.Bloom {
 			return nil, fmt.Errorf("bloom computed by execution: %x, in header: %x", bloom, header.Bloom)
 		}
 	}
@@ -341,7 +338,6 @@ func ExecuteBlockEphemerallyBor(
 	stateWriter state.WriterWithChangeSets,
 	epochReader consensus.EpochReader,
 	chainReader consensus.ChainHeaderReader,
-	statelessExec bool, // for usage of this API via cli tools wherein some of the validations need to be relaxed.
 	getTracer func(txIndex int, txHash common.Hash) (vm.Tracer, error),
 ) (*EphemeralExecResult, error) {
 
@@ -392,7 +388,7 @@ func ExecuteBlockEphemerallyBor(
 			vmConfig.Tracer = nil
 		}
 		if err != nil {
-			if !statelessExec {
+			if !vmConfig.StatelessExec {
 				return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, block.NumberU64(), tx.Hash().Hex(), err)
 			}
 			rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
@@ -405,18 +401,18 @@ func ExecuteBlockEphemerallyBor(
 	}
 
 	receiptSha := types.DeriveSha(receipts)
-	if !statelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {
+	if !vmConfig.StatelessExec && chainConfig.IsByzantium(header.Number.Uint64()) && !vmConfig.NoReceipts && receiptSha != block.ReceiptHash() {
 		return nil, fmt.Errorf("mismatched receipt headers for block %d (%s != %s)", block.NumberU64(), receiptSha.Hex(), block.ReceiptHash().Hex())
 	}
 
-	if !statelessExec && *usedGas != header.GasUsed {
+	if !vmConfig.StatelessExec && *usedGas != header.GasUsed {
 		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, header.GasUsed)
 	}
 
 	var bloom types.Bloom
 	if !vmConfig.NoReceipts {
 		bloom = types.CreateBloom(receipts)
-		if !statelessExec && bloom != header.Bloom {
+		if !vmConfig.StatelessExec && bloom != header.Bloom {
 			return nil, fmt.Errorf("bloom computed by execution: %x, in header: %x", bloom, header.Bloom)
 		}
 	}
@@ -433,33 +429,29 @@ func ExecuteBlockEphemerallyBor(
 	}
 
 	blockLogs := ibs.Logs()
-	var stateSyncReceipt *types.ReceiptForStorage
+	stateSyncReceipt := &types.Receipt{}
 	if chainConfig.Consensus == params.BorConsensus && len(blockLogs) > 0 {
-		var stateSyncLogs []*types.Log
 		slices.SortStableFunc(blockLogs, func(i, j *types.Log) bool { return i.Index < j.Index })
 
 		if len(blockLogs) > len(logs) {
-			stateSyncLogs = blockLogs[len(logs):] // get state-sync logs from `state.Logs()`
+			stateSyncReceipt.Logs = blockLogs[len(logs):] // get state-sync logs from `state.Logs()`
 
-			types.DeriveFieldsForBorLogs(stateSyncLogs, block.Hash(), block.NumberU64(), uint(len(receipts)), uint(len(logs)))
-
-			stateSyncReceipt = &types.ReceiptForStorage{
-				Status: types.ReceiptStatusSuccessful, // make receipt status successful
-				Logs:   stateSyncLogs,
-			}
+			// fill the state sync with the correct information
+			types.DeriveFieldsForBorReceipt(stateSyncReceipt, block.Hash(), block.NumberU64(), receipts)
+			stateSyncReceipt.Status = types.ReceiptStatusSuccessful
 		}
 	}
 
 	execRs := &EphemeralExecResult{
-		TxRoot:            types.DeriveSha(includedTxs),
-		ReceiptRoot:       receiptSha,
-		Bloom:             bloom,
-		LogsHash:          rlpHash(blockLogs),
-		Receipts:          receipts,
-		Difficulty:        (*math.HexOrDecimal256)(header.Difficulty),
-		GasUsed:           math.HexOrDecimal64(*usedGas),
-		Rejected:          rejectedTxs,
-		ReceiptForStorage: stateSyncReceipt,
+		TxRoot:           types.DeriveSha(includedTxs),
+		ReceiptRoot:      receiptSha,
+		Bloom:            bloom,
+		LogsHash:         rlpHash(blockLogs),
+		Receipts:         receipts,
+		Difficulty:       (*math.HexOrDecimal256)(header.Difficulty),
+		GasUsed:          math.HexOrDecimal64(*usedGas),
+		Rejected:         rejectedTxs,
+		StateSyncReceipt: stateSyncReceipt,
 	}
 
 	return execRs, nil
@@ -473,8 +465,6 @@ func rlpHash(x interface{}) (h common.Hash) {
 }
 
 func SysCallContract(contract common.Address, data []byte, chainConfig params.ChainConfig, ibs *state.IntraBlockState, header *types.Header, engine consensus.Engine) (result []byte, err error) {
-	gp := new(GasPool).AddGas(50_000_000)
-
 	if chainConfig.DAOForkSupport && chainConfig.DAOForkBlock != nil && chainConfig.DAOForkBlock.Cmp(header.Number) == 0 {
 		misc.ApplyDAOHardFork(ibs)
 	}
@@ -483,7 +473,7 @@ func SysCallContract(contract common.Address, data []byte, chainConfig params.Ch
 		state.SystemAddress,
 		&contract,
 		0, u256.Num0,
-		50_000_000, u256.Num0,
+		math.MaxUint64, u256.Num0,
 		nil, nil,
 		data, nil, false,
 	)
@@ -501,25 +491,19 @@ func SysCallContract(contract common.Address, data []byte, chainConfig params.Ch
 	}
 	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, author)
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
-	if isBor {
-		ret, _, err := evm.Call(
-			vm.AccountRef(msg.From()),
-			*msg.To(),
-			msg.Data(),
-			msg.Gas(),
-			msg.Value(),
-			false,
-		)
-		if err != nil {
-			return nil, nil
-		}
-		return ret, nil
+
+	ret, _, err := evm.Call(
+		vm.AccountRef(msg.From()),
+		*msg.To(),
+		msg.Data(),
+		msg.Gas(),
+		msg.Value(),
+		false,
+	)
+	if isBor && err != nil {
+		return nil, nil
 	}
-	res, err := ApplyMessage(evm, msg, gp, true /* refunds */, false /* gasBailout */)
-	if err != nil {
-		return nil, err
-	}
-	return res.ReturnData, nil
+	return ret, err
 }
 
 // from the null sender, with 50M gas.
@@ -574,28 +558,8 @@ func FinalizeBlockExecution(engine consensus.Engine, stateReader state.StateRead
 		return nil, nil, nil, err
 	}
 
-	var originalSystemAcc *accounts.Account
-	if cc.ChainID.Uint64() == 77 { // hack for Sokol - don't understand why eip158 is enabled, but OE still save SystemAddress with nonce=0
-		n := ibs.GetNonce(state.SystemAddress) //hack - because syscall must use ApplyMessage instead of ApplyTx (and don't create tx at all). But CallContract must create tx.
-		if n > 0 {
-			var err error
-			originalSystemAcc, err = stateReader.ReadAccountData(state.SystemAddress)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-		}
-	}
-
 	if err := ibs.CommitBlock(cc.Rules(header.Number.Uint64()), stateWriter); err != nil {
 		return nil, nil, nil, fmt.Errorf("committing block %d failed: %w", header.Number.Uint64(), err)
-	}
-
-	if originalSystemAcc != nil { // hack for Sokol - don't understand why eip158 is enabled, but OE still save SystemAddress with nonce=0
-		acc := accounts.NewAccount()
-		acc.Nonce = 0
-		if err := stateWriter.UpdateAccountData(state.SystemAddress, originalSystemAcc, &acc); err != nil {
-			return nil, nil, nil, err
-		}
 	}
 
 	if err := stateWriter.WriteChangeSets(); err != nil {
@@ -605,7 +569,6 @@ func FinalizeBlockExecution(engine consensus.Engine, stateReader state.StateRead
 }
 
 func InitializeBlockExecution(engine consensus.Engine, chain consensus.ChainHeaderReader, epochReader consensus.EpochReader, header *types.Header, txs types.Transactions, uncles []*types.Header, cc *params.ChainConfig, ibs *state.IntraBlockState) error {
-	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	engine.Initialize(cc, chain, epochReader, header, txs, uncles, func(contract common.Address, data []byte) ([]byte, error) {
 		return SysCallContract(contract, data, *cc, ibs, header, engine)
 	})

@@ -18,7 +18,9 @@ import (
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
+	"github.com/ledgerwatch/erigon/eth/ethconfig/estimate"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/erigon/node/nodecfg/datadir"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/turbo/services"
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
@@ -29,40 +31,39 @@ import (
 type SnapshotsCfg struct {
 	db          kv.RwDB
 	chainConfig params.ChainConfig
-
-	tmpdir string
+	dirs        datadir.Dirs
 
 	snapshots          *snapshotsync.RoSnapshots
 	blockRetire        *snapshotsync.BlockRetire
 	snapshotDownloader proto_downloader.DownloaderClient
 	blockReader        services.FullBlockReader
 	dbEventNotifier    snapshotsync.DBEventNotifier
-	historyV2          bool
+	historyV3          bool
 	agg                *state.Aggregator22
 }
 
 func StageSnapshotsCfg(
 	db kv.RwDB,
 	chainConfig params.ChainConfig,
-	tmpdir string,
+	dirs datadir.Dirs,
 	snapshots *snapshotsync.RoSnapshots,
 	blockRetire *snapshotsync.BlockRetire,
 	snapshotDownloader proto_downloader.DownloaderClient,
 	blockReader services.FullBlockReader,
 	dbEventNotifier snapshotsync.DBEventNotifier,
-	historyV2 bool,
+	historyV3 bool,
 	agg *state.Aggregator22,
 ) SnapshotsCfg {
 	return SnapshotsCfg{
 		db:                 db,
 		chainConfig:        chainConfig,
-		tmpdir:             tmpdir,
+		dirs:               dirs,
 		snapshots:          snapshots,
 		blockRetire:        blockRetire,
 		snapshotDownloader: snapshotDownloader,
 		blockReader:        blockReader,
 		dbEventNotifier:    dbEventNotifier,
-		historyV2:          historyV2,
+		historyV3:          historyV3,
 		agg:                agg,
 	}
 }
@@ -85,6 +86,21 @@ func SpawnStageSnapshots(
 	if err := DownloadAndIndexSnapshotsIfNeed(s, ctx, tx, cfg, initialCycle); err != nil {
 		return err
 	}
+	var minProgress uint64
+	for _, stage := range []stages.SyncStage{stages.Headers, stages.Bodies, stages.Senders, stages.TxLookup} {
+		progress, err := stages.GetStageProgress(tx, stage)
+		if err != nil {
+			return err
+		}
+		if minProgress == 0 || progress < minProgress {
+			minProgress = progress
+		}
+	}
+	if minProgress > s.BlockNumber {
+		if err = s.Update(tx, minProgress); err != nil {
+			return err
+		}
+	}
 	if !useExternalTx {
 		if err := tx.Commit(); err != nil {
 			return err
@@ -104,6 +120,10 @@ func DownloadAndIndexSnapshotsIfNeed(s *StageState, ctx context.Context, tx kv.R
 	}
 
 	cfg.snapshots.LogStat()
+	cfg.agg.LogStats(tx, func(endTxNumMinimax uint64) uint64 {
+		_, histBlockNumProgress, _ := rawdb.TxNums.FindBlockNum(tx, endTxNumMinimax)
+		return histBlockNumProgress
+	})
 
 	// Create .idx files
 	if cfg.snapshots.IndicesMax() < cfg.snapshots.SegmentsMax() {
@@ -118,8 +138,7 @@ func DownloadAndIndexSnapshotsIfNeed(s *StageState, ctx context.Context, tx kv.R
 			// wait for Downloader service to download all expected snapshots
 			if cfg.snapshots.IndicesMax() < cfg.snapshots.SegmentsMax() {
 				chainID, _ := uint256.FromBig(cfg.chainConfig.ChainID)
-				workers := cmp.InRange(1, 2, runtime.GOMAXPROCS(-1)-1)
-				if err := snapshotsync.BuildMissedIndices(s.LogPrefix(), ctx, cfg.snapshots.Dir(), *chainID, cfg.tmpdir, workers, log.LvlInfo); err != nil {
+				if err := snapshotsync.BuildMissedIndices(s.LogPrefix(), ctx, cfg.dirs, *chainID, estimate.IndexSnapshot.Workers()); err != nil {
 					return fmt.Errorf("BuildMissedIndices: %w", err)
 				}
 			}
@@ -133,6 +152,15 @@ func DownloadAndIndexSnapshotsIfNeed(s *StageState, ctx context.Context, tx kv.R
 		}
 	}
 
+	if cfg.historyV3 {
+		if err := cfg.agg.BuildMissedIndices(); err != nil {
+			return err
+		}
+		if cfg.dbEventNotifier != nil {
+			cfg.dbEventNotifier.OnNewSnapshot()
+		}
+	}
+
 	blocksAvailable := cfg.snapshots.BlocksAvailable()
 	if s.BlockNumber < blocksAvailable { // allow genesis
 		if err := s.Update(tx, blocksAvailable); err != nil {
@@ -140,7 +168,7 @@ func DownloadAndIndexSnapshotsIfNeed(s *StageState, ctx context.Context, tx kv.R
 		}
 		s.BlockNumber = blocksAvailable
 	}
-	if err := FillDBFromSnapshots(s.LogPrefix(), ctx, tx, cfg.tmpdir, cfg.snapshots, cfg.blockReader); err != nil {
+	if err := FillDBFromSnapshots(s.LogPrefix(), ctx, tx, cfg.dirs.Tmp, cfg.snapshots, cfg.blockReader); err != nil {
 		return err
 	}
 	return nil
@@ -189,7 +217,7 @@ func FillDBFromSnapshots(logPrefix string, ctx context.Context, tx kv.RwTx, tmpd
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-logEvery.C:
-					log.Info(fmt.Sprintf("[%s] Writing total difficulty index", logPrefix), "block_num", header.Number.Uint64())
+					log.Info(fmt.Sprintf("[%s] Total difficulty index: %dk/%dk", logPrefix, header.Number.Uint64()/1000, sn.BlocksAvailable()/1000))
 				default:
 				}
 				return nil
@@ -210,7 +238,7 @@ func FillDBFromSnapshots(logPrefix string, ctx context.Context, tx kv.RwTx, tmpd
 			// ResetSequence - allow set arbitrary value to sequence (for example to decrement it to exact value)
 			ok, err := sn.ViewTxs(blocksAvailable, func(sn *snapshotsync.TxnSegment) error {
 				lastTxnID := sn.IdxTxnHash.BaseDataID() + uint64(sn.Seg.Count())
-				if err := rawdb.ResetSequence(tx, kv.EthTx, lastTxnID+1); err != nil {
+				if err := rawdb.ResetSequence(tx, kv.EthTx, lastTxnID); err != nil {
 					return err
 				}
 				return nil
@@ -222,11 +250,11 @@ func FillDBFromSnapshots(logPrefix string, ctx context.Context, tx kv.RwTx, tmpd
 				return fmt.Errorf("snapshot not found for block: %d", blocksAvailable)
 			}
 
-			historyV2, err := rawdb.HistoryV2.Enabled(tx)
+			historyV3, err := rawdb.HistoryV3.Enabled(tx)
 			if err != nil {
 				return err
 			}
-			if historyV2 {
+			if historyV3 {
 				var toBlock uint64
 				if sn != nil {
 					toBlock = sn.BlocksAvailable()
@@ -246,10 +274,10 @@ func FillDBFromSnapshots(logPrefix string, ctx context.Context, tx kv.RwTx, tmpd
 							case <-ctx.Done():
 								return ctx.Err()
 							case <-logEvery.C:
-								log.Info(fmt.Sprintf("[%s] Writing MaxTxNums index for snapshots", logPrefix), "block_num", blockNum)
+								log.Info(fmt.Sprintf("[%s] MaxTxNums index: %dk/%dk", logPrefix, blockNum/1000, sn.BlocksAvailable()/1000))
 							default:
 							}
-							maxTxNum := baseTxNum + txAmount
+							maxTxNum := baseTxNum + txAmount - 1
 
 							if err := rawdb.TxNums.Append(tx, blockNum, maxTxNum); err != nil {
 								return fmt.Errorf("%w. blockNum=%d, maxTxNum=%d", err, blockNum, maxTxNum)
@@ -310,7 +338,7 @@ func WaitForDownloader(s *StageState, ctx context.Context, cfg SnapshotsCfg, tx 
 	for _, p := range preverifiedBlockSnapshots {
 		downloadRequest = append(downloadRequest, snapshotsync.NewDownloadRequest(nil, p.Name, p.Hash))
 	}
-	if cfg.historyV2 {
+	if cfg.historyV3 {
 		preverifiedHistorySnapshots := snapcfg.KnownCfg(cfg.chainConfig.ChainName, snInDB, snHistInDB).PreverifiedHistory
 		for _, p := range preverifiedHistorySnapshots {
 			downloadRequest = append(downloadRequest, snapshotsync.NewDownloadRequest(nil, p.Name, p.Hash))
@@ -474,11 +502,11 @@ func retireBlocksInSingleBackgroundThread(s *PruneState, blockRetire *snapshotsy
 	if blockRetire.Working() {
 		return nil
 	}
-	if res := blockRetire.Result(); res != nil {
-		if res.Err != nil {
-			return fmt.Errorf("[%s] retire blocks last error: %w, fromBlock=%d, toBlock=%d", s.LogPrefix(), res.Err, res.BlockFrom, res.BlockTo)
-		}
-
+	ok, err := blockRetire.BackgroundResult.GetAndReset()
+	if err != nil {
+		return fmt.Errorf("[%s] %w", s.LogPrefix(), err)
+	}
+	if ok {
 		if err := rawdb.WriteSnapshots(tx, blockRetire.Snapshots().Files()); err != nil {
 			return err
 		}

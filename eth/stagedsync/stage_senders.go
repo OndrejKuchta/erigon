@@ -63,7 +63,7 @@ func StageSendersCfg(db kv.RwDB, chainCfg *params.ChainConfig, badBlockHalt bool
 	}
 }
 
-func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context) error {
+func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, quiet bool) error {
 	if cfg.blockRetire != nil && cfg.blockRetire.Snapshots() != nil && cfg.blockRetire.Snapshots().Cfg().Enabled && s.BlockNumber < cfg.blockRetire.Snapshots().BlocksAvailable() {
 		s.BlockNumber = cfg.blockRetire.Snapshots().BlocksAvailable()
 	}
@@ -92,7 +92,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 		return nil
 	}
 	logPrefix := s.LogPrefix()
-	if to > s.BlockNumber+16 {
+	if !quiet && to > s.BlockNumber+16 {
 		log.Info(fmt.Sprintf("[%s] Started", logPrefix), "from", s.BlockNumber, "to", to)
 	}
 
@@ -166,7 +166,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 				if j != nil {
 					n += uint64(j.index)
 				}
-				log.Info(fmt.Sprintf("[%s] Recovery", logPrefix), "block_number", n)
+				log.Info(fmt.Sprintf("[%s] Recovery", logPrefix), "block_number", n, "ch", fmt.Sprintf("%d/%d", len(jobs), cap(jobs)))
 			case j, ok = <-out:
 				if !ok {
 					return

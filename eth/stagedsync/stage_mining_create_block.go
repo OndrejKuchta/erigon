@@ -91,6 +91,8 @@ func StageMiningCreateBlockCfg(db kv.RwDB, miner MiningState, chainConfig params
 	}
 }
 
+var maxTransactions uint16 = 1000
+
 // SpawnMiningCreateBlockStage
 // TODO:
 // - resubmitAdjustCh - variable is not implemented
@@ -130,7 +132,7 @@ func SpawnMiningCreateBlockStage(s *StageState, tx kv.RwTx, cfg MiningCreateBloc
 	var txs []types.Transaction
 	if err = cfg.txPool2DB.View(context.Background(), func(poolTx kv.Tx) error {
 		txSlots := types2.TxsRlp{}
-		if err := cfg.txPool2.Best(200, &txSlots, poolTx); err != nil {
+		if err := cfg.txPool2.Best(maxTransactions, &txSlots, poolTx); err != nil {
 			return err
 		}
 
@@ -211,7 +213,7 @@ func SpawnMiningCreateBlockStage(s *StageState, tx kv.RwTx, cfg MiningCreateBloc
 	header.Coinbase = coinbase
 	header.Extra = cfg.miner.MiningConfig.ExtraData
 
-	txs, err = filterBadTransactions(tx, txs, cfg.chainConfig, blockNum, header.BaseFee)
+	txs, err = filterBadTransactions(tx, txs, cfg.chainConfig, blockNum, header.BaseFee, cfg.tmpdir)
 	if err != nil {
 		return err
 	}
@@ -351,9 +353,9 @@ func readNonCanonicalHeaders(tx kv.Tx, blockNum uint64, engine consensus.Engine,
 	return
 }
 
-func filterBadTransactions(tx kv.Tx, transactions []types.Transaction, config params.ChainConfig, blockNumber uint64, baseFee *big.Int) ([]types.Transaction, error) {
+func filterBadTransactions(tx kv.Tx, transactions []types.Transaction, config params.ChainConfig, blockNumber uint64, baseFee *big.Int, tmpDir string) ([]types.Transaction, error) {
 	var filtered []types.Transaction
-	simulationTx := memdb.NewMemoryBatch(tx)
+	simulationTx := memdb.NewMemoryBatch(tx, tmpDir)
 	defer simulationTx.Rollback()
 	gasBailout := config.Consensus == params.ParliaConsensus
 

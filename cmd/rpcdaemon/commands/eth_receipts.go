@@ -130,11 +130,12 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 		end = latest
 	}
 
-	if api.historyV2(tx) {
-		return api.getLogs22(ctx, tx, begin, end, crit)
+	if api.historyV3(tx) {
+		return api.getLogsV3(ctx, tx, begin, end, crit)
 	}
 
-	blockNumbers := roaring.New()
+	blockNumbers := bitmapdb.NewBitmap()
+	defer bitmapdb.ReturnToPool(blockNumbers)
 	blockNumbers.AddRange(begin, end+1) // [min,max)
 	topicsBitmap, err := getTopicsBitmap(tx, crit.Topics, uint32(begin), uint32(end))
 	if err != nil {
@@ -145,20 +146,18 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 		blockNumbers.And(topicsBitmap)
 	}
 
-	var addrBitmap *roaring.Bitmap
-	for _, addr := range crit.Addresses {
+	rx := make([]*roaring.Bitmap, len(crit.Addresses))
+	for idx, addr := range crit.Addresses {
 		m, err := bitmapdb.Get(tx, kv.LogAddressIndex, addr[:], uint32(begin), uint32(end))
 		if err != nil {
 			return nil, err
 		}
-		if addrBitmap == nil {
-			addrBitmap = m
-			continue
-		}
-		addrBitmap = roaring.Or(addrBitmap, m)
+		rx[idx] = m
 	}
 
-	if addrBitmap != nil {
+	addrBitmap := roaring.FastOr(rx...)
+
+	if len(rx) > 0 {
 		blockNumbers.And(addrBitmap)
 	}
 
@@ -267,7 +266,7 @@ func getTopicsBitmap(c kv.Tx, topics [][]common.Hash, from, to uint32) (*roaring
 	return result, nil
 }
 
-func (api *APIImpl) getLogs22(ctx context.Context, tx kv.Tx, begin, end uint64, crit filters.FilterCriteria) ([]*types.Log, error) {
+func (api *APIImpl) getLogsV3(ctx context.Context, tx kv.Tx, begin, end uint64, crit filters.FilterCriteria) ([]*types.Log, error) {
 	logs := []*types.Log{}
 
 	var fromTxNum, toTxNum uint64
@@ -289,7 +288,7 @@ func (api *APIImpl) getLogs22(ctx context.Context, tx kv.Tx, begin, end uint64, 
 	ac := api._agg.MakeContext()
 	ac.SetTx(tx)
 
-	topicsBitmap, err := getTopicsBitmap2(ac, tx, crit.Topics, fromTxNum, toTxNum)
+	topicsBitmap, err := getTopicsBitmapV3(ac, tx, crit.Topics, fromTxNum, toTxNum)
 	if err != nil {
 		return nil, err
 	}
@@ -326,6 +325,7 @@ func (api *APIImpl) getLogs22(ctx context.Context, tx kv.Tx, begin, end uint64, 
 	var lastRules *params.Rules
 	stateReader := state.NewHistoryReader22(ac)
 	stateReader.SetTx(tx)
+	//stateReader.SetTrace(true)
 	iter := txNumbers.Iterator()
 
 	chainConfig, err := api.chainConfig(tx)
@@ -374,24 +374,30 @@ func (api *APIImpl) getLogs22(ctx context.Context, tx kv.Tx, begin, end uint64, 
 			return nil, err
 		}
 		blockCtx, txCtx := transactions.GetEvmContext(msg, lastHeader, true /* requireCanonical */, tx, api._blockReader)
-		stateReader.SetTxNum(txNum)
+		stateReader.SetTxNum(txNum - 1)
+		//stateReader.SetTxNum(txNum)
 		vmConfig := vm.Config{}
 		vmConfig.SkipAnalysis = core.SkipAnalysis(chainConfig, blockNum)
 		ibs := state.New(stateReader)
 		evm := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, vmConfig)
 
 		gp := new(core.GasPool).AddGas(msg.Gas())
-		ibs.Prepare(txHash, lastBlockHash, int(txIndex))
+		ibs.Prepare(txHash, lastBlockHash, txIndex)
 		_, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, false /* gasBailout */)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: blockNum=%d, txNum=%d", err, blockNum, txNum)
 		}
-		filtered := filterLogs(ibs.GetLogs(txHash), crit.Addresses, crit.Topics)
+		rawLogs := ibs.GetLogs(txHash)
+		var logIndex uint
+		for _, log := range rawLogs {
+			log.Index = logIndex
+			logIndex++
+		}
+		filtered := filterLogs(rawLogs, crit.Addresses, crit.Topics)
 		for _, log := range filtered {
 			log.BlockNumber = blockNum
 			log.BlockHash = lastBlockHash
 			log.TxHash = txHash
-			log.Index = 0
 		}
 		logs = append(logs, filtered...)
 	}
@@ -411,7 +417,7 @@ func (api *APIImpl) getLogs22(ctx context.Context, tx kv.Tx, begin, end uint64, 
 // {{}, {B}}          matches any topic in first position AND B in second position
 // {{A}, {B}}         matches topic A in first position AND B in second position
 // {{A, B}, {C, D}}   matches topic (A OR B) in first position AND (C OR D) in second position
-func getTopicsBitmap2(ac *libstate.Aggregator22Context, tx kv.Tx, topics [][]common.Hash, from, to uint64) (*roaring64.Bitmap, error) {
+func getTopicsBitmapV3(ac *libstate.Aggregator22Context, tx kv.Tx, topics [][]common.Hash, from, to uint64) (*roaring64.Bitmap, error) {
 	var result *roaring64.Bitmap
 	for _, sub := range topics {
 		var bitmapForORing roaring64.Bitmap
@@ -491,14 +497,17 @@ func (api *APIImpl) GetTransactionReceipt(ctx context.Context, txnHash common.Ha
 	}
 
 	if txn == nil {
-		borTx, blockHash, _, _, err := rawdb.ReadBorTransactionForBlockNumber(tx, blockNum)
+		borTx, _, _, _, err := rawdb.ReadBorTransactionForBlockNumber(tx, blockNum)
 		if err != nil {
 			return nil, err
 		}
 		if borTx == nil {
 			return nil, nil
 		}
-		borReceipt := rawdb.ReadBorReceipt(tx, blockHash, blockNum)
+		borReceipt, err := rawdb.ReadBorReceipt(tx, blockNum)
+		if err != nil {
+			return nil, err
+		}
 		if borReceipt == nil {
 			return nil, nil
 		}
@@ -552,7 +561,10 @@ func (api *APIImpl) GetBlockReceipts(ctx context.Context, number rpc.BlockNumber
 	if chainConfig.Bor != nil {
 		borTx, _, _, _ := rawdb.ReadBorTransactionForBlock(tx, block)
 		if borTx != nil {
-			borReceipt := rawdb.ReadBorReceipt(tx, block.Hash(), blockNum)
+			borReceipt, err := rawdb.ReadBorReceipt(tx, blockNum)
+			if err != nil {
+				return nil, err
+			}
 			if borReceipt != nil {
 				result = append(result, marshalReceipt(borReceipt, borTx, chainConfig, block, borReceipt.TxHash, false))
 			}
