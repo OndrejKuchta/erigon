@@ -118,6 +118,46 @@ func (api *APIImpl) GetFilterChanges(_ context.Context, index string) ([]interfa
 	return stub, nil
 }
 
+// TODO: GetFilterLogs implements eth_getFilterLogs. HACK, it's only a copy of GetFilterChanges above
+func (api *APIImpl) GetFilterLogs(_ context.Context, index string) ([]interface{}, error) {
+	if api.filters == nil {
+		return nil, rpc.ErrNotificationsUnsupported
+	}
+	stub := make([]interface{}, 0)
+
+	// remove 0x
+	cutIndex := index
+	if len(index) >= 2 && index[0] == '0' && (index[1] == 'x' || index[1] == 'X') {
+		cutIndex = index[2:]
+	}
+	if blocks, ok := api.filters.ReadPendingBlocks(rpchelper.HeadsSubID(cutIndex)); ok {
+		for _, v := range blocks {
+			stub = append(stub, v.Hash())
+		}
+		return stub, nil
+	}
+	if txs, ok := api.filters.ReadPendingTxs(rpchelper.PendingTxsSubID(cutIndex)); ok {
+		if len(txs) > 0 {
+			for _, tx := range txs[0] {
+				stub = append(stub, tx.Hash())
+			}
+			return stub, nil
+		}
+		return stub, nil
+	}
+	id, err := hexutil.DecodeUint64(index)
+	if err != nil {
+		return stub, nil
+	}
+	if logs, ok := api.filters.ReadLogs(rpchelper.LogsSubID(id)); ok {
+		for _, v := range logs {
+			stub = append(stub, v)
+		}
+		return stub, nil
+	}
+	return stub, nil
+}
+
 // NewHeads send a notification each time a new (header) block is appended to the chain.
 func (api *APIImpl) NewHeads(ctx context.Context) (*rpc.Subscription, error) {
 	if api.filters == nil {
