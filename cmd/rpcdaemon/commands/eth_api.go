@@ -61,6 +61,7 @@ type EthAPI interface {
 	NewFilter(_ context.Context, crit ethFilters.FilterCriteria) (string, error)
 	UninstallFilter(_ context.Context, index string) (bool, error)
 	GetFilterChanges(_ context.Context, index string) ([]interface{}, error)
+	GetFilterLogs(_ context.Context, index string) ([]interface{}, error)
 
 	// Account related (see ./eth_accounts.go)
 	Accounts(ctx context.Context) ([]common.Address, error)
