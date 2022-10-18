@@ -218,7 +218,12 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 		for _, log := range blockLogs {
 			log.BlockNumber = blockNumber
 			log.BlockHash = blockHash
-			log.TxHash = body.Transactions[log.TxIndex].Hash()
+			// bor transactions are at the end of the bodies transactions (added manually but not actually part of the block)
+			if log.TxIndex == uint(len(body.Transactions)) {
+				log.TxHash = types.ComputeBorTxHash(blockNumber, blockHash)
+			} else {
+				log.TxHash = body.Transactions[log.TxIndex].Hash()
+			}
 		}
 		logs = append(logs, blockLogs...)
 	}
@@ -374,8 +379,8 @@ func (api *APIImpl) getLogsV3(ctx context.Context, tx kv.Tx, begin, end uint64, 
 			return nil, err
 		}
 		blockCtx, txCtx := transactions.GetEvmContext(msg, lastHeader, true /* requireCanonical */, tx, api._blockReader)
-		stateReader.SetTxNum(txNum - 1)
-		//stateReader.SetTxNum(txNum)
+		//stateReader.SetTxNum(txNum - 1)
+		stateReader.SetTxNum(txNum)
 		vmConfig := vm.Config{}
 		vmConfig.SkipAnalysis = core.SkipAnalysis(chainConfig, blockNum)
 		ibs := state.New(stateReader)

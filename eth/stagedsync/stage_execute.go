@@ -5,11 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/big"
-	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -19,6 +15,8 @@ import (
 	"github.com/ledgerwatch/erigon-lib/etl"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
+	"github.com/ledgerwatch/log/v3"
+
 	commonold "github.com/ledgerwatch/erigon/common"
 	ecom "github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/changeset"
@@ -42,7 +40,6 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/shards"
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
-	"github.com/ledgerwatch/log/v3"
 )
 
 const (
@@ -232,20 +229,12 @@ func newStateReaderWriter(
 // ================ Erigon3 ================
 
 func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, cfg ExecuteBlockCfg, initialCycle bool) (err error) {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	execCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		<-sigs
-		cancel()
-	}()
-
 	workersCount := cfg.workersCount
 	//workersCount := 2
 	if !initialCycle {
 		workersCount = 1
 	}
-	cfg.agg.SetWorkers(cmp.Max(1, runtime.NumCPU()-1))
+	cfg.agg.SetWorkers(cmp.Max(1, runtime.NumCPU()/2))
 
 	if initialCycle && s.BlockNumber == 0 {
 		reconstituteToBlock, found, err := reconstituteBlock(cfg.agg, cfg.db, tx)
@@ -255,7 +244,7 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 
 		if found && reconstituteToBlock > s.BlockNumber+1 {
 			log.Info(fmt.Sprintf("[%s] Blocks execution, reconstitution", s.LogPrefix()), "from", s.BlockNumber, "to", reconstituteToBlock)
-			if err := ReconstituteState(execCtx, s, cfg.dirs, workersCount, cfg.batchSize, cfg.db, cfg.blockReader, log.New(), cfg.agg, cfg.engine, cfg.chainConfig, cfg.genesis); err != nil {
+			if err := ReconstituteState(ctx, s, cfg.dirs, workersCount, cfg.batchSize, cfg.db, cfg.blockReader, log.New(), cfg.agg, cfg.engine, cfg.chainConfig, cfg.genesis); err != nil {
 				return err
 			}
 		}
@@ -278,7 +267,7 @@ func ExecBlock22(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx cont
 		log.Info(fmt.Sprintf("[%s] Blocks execution", logPrefix), "from", s.BlockNumber, "to", to)
 	}
 	rs := state.NewState22()
-	if err := Exec3(execCtx, s, workersCount, cfg.batchSize, cfg.db, tx, rs,
+	if err := Exec3(ctx, s, workersCount, cfg.batchSize, cfg.db, tx, rs,
 		cfg.blockReader, log.New(), cfg.agg, cfg.engine,
 		to,
 		cfg.chainConfig, cfg.genesis); err != nil {
@@ -390,13 +379,6 @@ func SpawnExecuteBlocksStage(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint
 		log.Info(fmt.Sprintf("[%s] Blocks execution", logPrefix), "from", s.BlockNumber, "to", to)
 	}
 
-	startTime := time.Now()
-
-	var batch ethdb.DbWithPendingMutations
-	// state is stored through ethdb batches
-	batch = olddb.NewHashBatch(tx, quit, cfg.dirs.Tmp)
-
-	defer batch.Rollback()
 	// changes are stored through memory buffer
 	logEvery := time.NewTicker(logInterval)
 	defer logEvery.Stop()
@@ -409,15 +391,6 @@ func SpawnExecuteBlocksStage(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint
 	// Transform batch_size limit into Ggas
 	gasState := uint64(cfg.batchSize) * uint64(datasize.KB) * 2
 
-	startGasUsed, err := rawdb.ReadCumulativeGasUsed(tx, s.BlockNumber)
-	if err != nil {
-		return err
-	}
-
-	totalGasUsed, err := rawdb.ReadCumulativeGasUsed(tx, to)
-	if err != nil {
-		return err
-	}
 	var stoppedErr error
 
 	effectiveEngine := cfg.engine
@@ -425,6 +398,15 @@ func SpawnExecuteBlocksStage(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint
 		asyncEngine = asyncEngine.WithExecutionContext(ctx)
 		effectiveEngine = asyncEngine.(consensus.Engine)
 	}
+
+	var batch ethdb.DbWithPendingMutations
+	// state is stored through ethdb batches
+	batch = olddb.NewHashBatch(tx, quit, cfg.dirs.Tmp)
+	// avoids stacking defers within the loop
+	defer func() {
+		batch.Rollback()
+	}()
+
 Loop:
 	for blockNum := stageProgress + 1; blockNum <= to; blockNum++ {
 		if stoppedErr = common.Stopped(quit); stoppedErr != nil {
@@ -465,7 +447,8 @@ Loop:
 		}
 		stageProgress = blockNum
 
-		if currentStateGas >= gasState {
+		shouldUpdateProgress := batch.BatchSize() >= int(cfg.batchSize)
+		if shouldUpdateProgress {
 			log.Info("Committed State", "gas reached", currentStateGas, "gasTarget", gasState)
 			currentStateGas = 0
 			if err = batch.Commit(); err != nil {
@@ -486,8 +469,6 @@ Loop:
 				defer tx.Rollback()
 			}
 			batch = olddb.NewHashBatch(tx, quit, cfg.dirs.Tmp)
-			// TODO: This creates stacked up deferrals
-			defer batch.Rollback()
 		}
 
 		gas = gas + block.GasUsed()
@@ -495,18 +476,7 @@ Loop:
 		select {
 		default:
 		case <-logEvery.C:
-			cumulativeGas, err := rawdb.ReadCumulativeGasUsed(tx, blockNum)
-			if err != nil {
-				return err
-			}
-			totalGasTmp := new(big.Int).Set(totalGasUsed)
-			elapsed := time.Since(startTime)
-			estimateRatio := float64(cumulativeGas.Sub(cumulativeGas, startGasUsed).Uint64()) / float64(totalGasTmp.Sub(totalGasTmp, startGasUsed).Uint64())
-			var estimatedTime commonold.PrettyDuration
-			if estimateRatio != 0 {
-				estimatedTime = commonold.PrettyDuration((elapsed.Seconds() / estimateRatio) * float64(time.Second))
-			}
-			logBlock, logTx, logTime = logProgress(logPrefix, logBlock, logTime, blockNum, logTx, lastLogTx, gas, float64(currentStateGas)/float64(gasState), estimatedTime, batch)
+			logBlock, logTx, logTime = logProgress(logPrefix, logBlock, logTime, blockNum, logTx, lastLogTx, gas, float64(currentStateGas)/float64(gasState), batch)
 			gas = 0
 			tx.CollectMetrics()
 			syncMetrics[stages.Execution].Set(blockNum)
@@ -532,7 +502,7 @@ Loop:
 	return stoppedErr
 }
 
-func logProgress(logPrefix string, prevBlock uint64, prevTime time.Time, currentBlock uint64, prevTx, currentTx uint64, gas uint64, gasState float64, estimatedTime commonold.PrettyDuration, batch ethdb.DbWithPendingMutations) (uint64, uint64, time.Time) {
+func logProgress(logPrefix string, prevBlock uint64, prevTime time.Time, currentBlock uint64, prevTx, currentTx uint64, gas uint64, gasState float64, batch ethdb.DbWithPendingMutations) (uint64, uint64, time.Time) {
 	currentTime := time.Now()
 	interval := currentTime.Sub(prevTime)
 	speed := float64(currentBlock-prevBlock) / (float64(interval) / float64(time.Second))
@@ -547,9 +517,6 @@ func logProgress(logPrefix string, prevBlock uint64, prevTime time.Time, current
 		"tx/s", fmt.Sprintf("%.1f", speedTx),
 		"Mgas/s", fmt.Sprintf("%.1f", speedMgas),
 		"gasState", fmt.Sprintf("%.2f", gasState),
-	}
-	if estimatedTime > 0 {
-		logpairs = append(logpairs, "estimated duration", estimatedTime)
 	}
 	if batch != nil {
 		logpairs = append(logpairs, "batch", common.ByteCount(uint64(batch.BatchSize())))

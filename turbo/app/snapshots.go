@@ -15,7 +15,6 @@ import (
 	"github.com/c2h5oh/datasize"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/common/cmp"
 	"github.com/ledgerwatch/erigon-lib/common/dir"
 	"github.com/ledgerwatch/erigon-lib/compress"
 	"github.com/ledgerwatch/erigon-lib/etl"
@@ -211,15 +210,14 @@ func doIndicesCommand(cliCtx *cli.Context) error {
 
 	dir.MustExist(dirs.SnapHistory)
 
-	workers := cmp.Max(1, runtime.GOMAXPROCS(-1)-1)
 	if rebuild {
 		panic("not implemented")
 	}
 	cfg := ethconfig.NewSnapCfg(true, true, false)
-	if err := rebuildIndices("Indexing", ctx, chainDB, cfg, dirs, from, workers); err != nil {
+	if err := rebuildIndices("Indexing", ctx, chainDB, cfg, dirs, from, estimate.IndexSnapshot.Workers()); err != nil {
 		log.Error("Error", "err", err)
 	}
-	agg, err := libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep, chainDB)
+	agg, err := libstate.NewAggregator22(dirs.SnapHistory, dirs.Tmp, ethconfig.HistoryV3AggregationStep, chainDB)
 	if err != nil {
 		return err
 	}
@@ -293,8 +291,7 @@ func doCompress(cliCtx *cli.Context) error {
 	}
 	f := args[0]
 	dirs := datadir.New(cliCtx.String(utils.DataDirFlag.Name))
-	workers := cmp.Max(1, runtime.GOMAXPROCS(-1)-1)
-	c, err := compress.NewCompressor(ctx, "compress", f, dirs.Tmp, compress.MinPatternScore, workers, log.LvlInfo)
+	c, err := compress.NewCompressor(ctx, "compress", f, dirs.Tmp, compress.MinPatternScore, estimate.CompressSnapshot.Workers(), log.LvlInfo)
 	if err != nil {
 		return err
 	}
@@ -347,8 +344,17 @@ func doRetireCommand(cliCtx *cli.Context) error {
 		return err
 	}
 
-	workers := cmp.Max(1, runtime.GOMAXPROCS(-1)-1)
-	br := snapshotsync.NewBlockRetire(workers, dirs.Tmp, snapshots, db, nil, nil)
+	br := snapshotsync.NewBlockRetire(estimate.CompressSnapshot.Workers(), dirs.Tmp, snapshots, db, nil, nil)
+
+	agg, err := libstate.NewAggregator22(dirs.SnapHistory, dirs.Tmp, ethconfig.HistoryV3AggregationStep, db)
+	if err != nil {
+		return err
+	}
+	err = agg.ReopenFiles()
+	if err != nil {
+		return err
+	}
+	agg.SetWorkers(estimate.CompressSnapshot.Workers())
 
 	log.Info("Params", "from", from, "to", to, "every", every)
 	for i := from; i < to; i += every {
@@ -356,7 +362,7 @@ func doRetireCommand(cliCtx *cli.Context) error {
 			panic(err)
 		}
 		if err := db.Update(ctx, func(tx kv.RwTx) error {
-			if err := rawdb.WriteSnapshots(tx, br.Snapshots().Files()); err != nil {
+			if err := rawdb.WriteSnapshots(tx, br.Snapshots().Files(), agg.Files()); err != nil {
 				return err
 			}
 			log.Info("prune blocks from db\n")
@@ -371,15 +377,7 @@ func doRetireCommand(cliCtx *cli.Context) error {
 		}
 	}
 
-	agg, err := libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep, db)
-	if err != nil {
-		return err
-	}
-	err = agg.ReopenFiles()
-	if err != nil {
-		return err
-	}
-	agg.SetWorkers(estimate.CompressSnapshot.Workers())
+	log.Info("Work on history snapshots")
 	if err = agg.BuildMissedIndices(); err != nil {
 		return err
 	}
@@ -416,8 +414,19 @@ func doSnapshotCommand(cliCtx *cli.Context) error {
 		if err := allSnapshots.ReopenFolder(); err != nil {
 			return err
 		}
+
+		agg, err := libstate.NewAggregator22(dirs.SnapHistory, dirs.Tmp, ethconfig.HistoryV3AggregationStep, db)
+		if err != nil {
+			return err
+		}
+		err = agg.ReopenFiles()
+		if err != nil {
+			return err
+		}
+		agg.SetWorkers(estimate.CompressSnapshot.Workers())
+
 		if err := db.Update(ctx, func(tx kv.RwTx) error {
-			return rawdb.WriteSnapshots(tx, allSnapshots.Files())
+			return rawdb.WriteSnapshots(tx, allSnapshots.Files(), agg.Files())
 		}); err != nil {
 			return err
 		}
@@ -475,8 +484,7 @@ func snapshotBlocks(ctx context.Context, db kv.RoDB, fromBlock, toBlock, blocksP
 	}
 
 	log.Info("Last body number", "last", last)
-	workers := cmp.Max(1, runtime.GOMAXPROCS(-1)-1)
-	if err := snapshotsync.DumpBlocks(ctx, fromBlock, last, blocksPerFile, tmpDir, snapDir, db, workers, log.LvlInfo); err != nil {
+	if err := snapshotsync.DumpBlocks(ctx, fromBlock, last, blocksPerFile, tmpDir, snapDir, db, estimate.CompressSnapshot.Workers(), log.LvlInfo); err != nil {
 		return fmt.Errorf("DumpBlocks: %w", err)
 	}
 	return nil

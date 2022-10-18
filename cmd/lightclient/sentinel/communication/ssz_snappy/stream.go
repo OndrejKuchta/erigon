@@ -15,6 +15,7 @@ package ssz_snappy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -149,6 +150,9 @@ func EncodeAndWrite(w io.Writer, val ssz.Marshaler, prefix ...byte) error {
 }
 
 func getPrefixFromResponseType(val cltypes.ObjectSSZ) []byte {
+	if _, ok := val.(*cltypes.LightClientBootstrap); ok {
+		return make([]byte, 7)
+	}
 	if val.SizeSSZ() <= 16 {
 		return []byte{0x08}
 	}
@@ -157,7 +161,7 @@ func getPrefixFromResponseType(val cltypes.ObjectSSZ) []byte {
 
 func DecodeAndRead(r io.Reader, val cltypes.ObjectSSZ) error {
 	ln := val.SizeSSZ()
-	if _, err := r.Read(make([]byte, len(getPrefixFromResponseType(val)))); err != nil {
+	if _, err := r.Read(getPrefixFromResponseType(val)); err != nil {
 		return err
 	}
 
@@ -190,4 +194,25 @@ func readUvarint(r io.Reader) (x uint64, err error) {
 
 	// The number is too large to represent in a 64-bit value.
 	return 0, nil
+}
+
+func DecodeLightClientUpdate(data []byte) (*cltypes.LightClientUpdate, error) {
+	resp := &cltypes.LightClientUpdate{}
+	singleLen := resp.SizeSSZ()
+	r := bytes.NewReader(data[7:])
+
+	sr := snappy.NewReader(r)
+	raw := make([]byte, singleLen)
+
+	_, err := sr.Read(raw)
+	if err != nil {
+		return nil, fmt.Errorf("readPacket: %w", err)
+	}
+
+	err = resp.UnmarshalSSZ(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
