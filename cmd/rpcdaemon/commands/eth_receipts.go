@@ -164,7 +164,10 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 	if blockNumbers.GetCardinality() == 0 {
 		return logs, nil
 	}
-
+	addrMap := make(map[common.Address]struct{}, len(crit.Addresses))
+	for _, v := range crit.Addresses {
+		addrMap[v] = struct{}{}
+	}
 	iter := blockNumbers.Iterator()
 	for iter.HasNext() {
 		if err = ctx.Err(); err != nil {
@@ -175,6 +178,7 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 		var logIndex uint
 		var txIndex uint
 		var blockLogs []*types.Log
+
 		err := tx.ForPrefix(kv.Log, dbutils.EncodeBlockNumber(blockNumber), func(k, v []byte) error {
 			var logs types.Logs
 			if err := cbor.Unmarshal(&logs, bytes.NewReader(v)); err != nil {
@@ -184,7 +188,7 @@ func (api *APIImpl) GetLogs(ctx context.Context, crit filters.FilterCriteria) (t
 				log.Index = logIndex
 				logIndex++
 			}
-			filtered := filterLogs(logs, crit.Addresses, crit.Topics)
+			filtered := filterLogs(logs, addrMap, crit.Topics)
 			if len(filtered) == 0 {
 				return nil
 			}
@@ -337,6 +341,10 @@ func (api *APIImpl) getLogsV3(ctx context.Context, tx kv.Tx, begin, end uint64, 
 	if err != nil {
 		return nil, err
 	}
+	addrMap := make(map[common.Address]struct{}, len(crit.Addresses))
+	for _, v := range crit.Addresses {
+		addrMap[v] = struct{}{}
+	}
 	for iter.HasNext() {
 		txNum := iter.Next()
 		// Find block number
@@ -398,7 +406,7 @@ func (api *APIImpl) getLogsV3(ctx context.Context, tx kv.Tx, begin, end uint64, 
 			log.Index = logIndex
 			logIndex++
 		}
-		filtered := filterLogs(rawLogs, crit.Addresses, crit.Topics)
+		filtered := filterLogs(rawLogs, addrMap, crit.Topics)
 		for _, log := range filtered {
 			log.BlockNumber = blockNum
 			log.BlockHash = lastBlockHash
@@ -501,22 +509,15 @@ func (api *APIImpl) GetTransactionReceipt(ctx context.Context, txnHash common.Ha
 		}
 	}
 
+	var borTx types.Transaction
 	if txn == nil {
-		borTx, _, _, _, err := rawdb.ReadBorTransactionForBlockNumber(tx, blockNum)
+		borTx, _, _, _, err = rawdb.ReadBorTransactionForBlockNumber(tx, blockNum)
 		if err != nil {
 			return nil, err
 		}
 		if borTx == nil {
 			return nil, nil
 		}
-		borReceipt, err := rawdb.ReadBorReceipt(tx, blockNum)
-		if err != nil {
-			return nil, err
-		}
-		if borReceipt == nil {
-			return nil, nil
-		}
-		return marshalReceipt(borReceipt, borTx, cc, block, txnHash, false), nil
 	}
 
 	receipts, err := api.getReceipts(ctx, tx, cc, block, block.Body().SendersFromTxs())
@@ -526,6 +527,18 @@ func (api *APIImpl) GetTransactionReceipt(ctx context.Context, txnHash common.Ha
 	if len(receipts) <= int(txnIndex) {
 		return nil, fmt.Errorf("block has less receipts than expected: %d <= %d, block: %d", len(receipts), int(txnIndex), blockNum)
 	}
+
+	if txn == nil {
+		borReceipt, err := rawdb.ReadBorReceipt(tx, block.Hash(), blockNum, receipts)
+		if err != nil {
+			return nil, err
+		}
+		if borReceipt == nil {
+			return nil, nil
+		}
+		return marshalReceipt(borReceipt, borTx, cc, block, txnHash, false), nil
+	}
+
 	return marshalReceipt(receipts[txnIndex], block.Transactions()[txnIndex], cc, block, txnHash, true), nil
 }
 
@@ -566,7 +579,7 @@ func (api *APIImpl) GetBlockReceipts(ctx context.Context, number rpc.BlockNumber
 	if chainConfig.Bor != nil {
 		borTx, _, _, _ := rawdb.ReadBorTransactionForBlock(tx, block)
 		if borTx != nil {
-			borReceipt, err := rawdb.ReadBorReceipt(tx, blockNum)
+			borReceipt, err := rawdb.ReadBorReceipt(tx, block.Hash(), block.NumberU64(), receipts)
 			if err != nil {
 				return nil, err
 			}
@@ -638,16 +651,14 @@ func includes(addresses []common.Address, a common.Address) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
 // filterLogs creates a slice of logs matching the given criteria.
-func filterLogs(logs []*types.Log, addresses []common.Address, topics [][]common.Hash) []*types.Log {
+func filterLogsOld(logs []*types.Log, addresses []common.Address, topics [][]common.Hash) []*types.Log {
 	result := make(types.Logs, 0, len(logs))
 Logs:
 	for _, log := range logs {
-
 		if len(addresses) > 0 && !includes(addresses, log.Address) {
 			continue
 		}
@@ -666,6 +677,44 @@ Logs:
 			if !match {
 				continue Logs
 			}
+		}
+		result = append(result, log)
+	}
+	return result
+}
+
+func filterLogs(logs []*types.Log, addresses map[common.Address]struct{}, topics [][]common.Hash) []*types.Log {
+	result := make(types.Logs, 0, len(logs))
+	// populate a set of addresses
+	for _, log := range logs {
+		// empty address list means no filter
+		if len(addresses) > 0 {
+			// this is basically the includes function but done with a map
+			if _, ok := addresses[log.Address]; !ok {
+				continue
+			}
+		}
+		// If the to filtered topics is greater than the amount of topics in logs, skip.
+		if len(topics) > len(log.Topics) {
+			continue
+		}
+		var match bool
+		for i, sub := range topics {
+			match = len(sub) == 0 // empty rule set == wildcard
+			// iterate over the subtopics and look for any match.
+			for _, topic := range sub {
+				if log.Topics[i] == topic {
+					match = true
+					break
+				}
+			}
+			// there was no match, so this log is invalid.
+			if !match {
+				break
+			}
+		}
+		if !match {
+			continue
 		}
 		result = append(result, log)
 	}

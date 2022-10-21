@@ -50,7 +50,7 @@ type Progress struct {
 	commitThreshold    uint64
 }
 
-func (p *Progress) Log(logPrefix string, rs *state.State22, rws state.TxTaskQueue, count, inputBlockNum, outputBlockNum, repeatCount uint64, resultsSize uint64, resultCh chan *state.TxTask) {
+func (p *Progress) Log(logPrefix string, rs *state.State22, rws state.TxTaskQueue, queueSize, count, inputBlockNum, outputBlockNum, repeatCount uint64, resultsSize uint64, resultCh chan *state.TxTask) {
 	var m runtime.MemStats
 	common.ReadMemStats(&m)
 	sizeEstimate := rs.SizeEstimate()
@@ -69,7 +69,7 @@ func (p *Progress) Log(logPrefix string, rs *state.State22, rws state.TxTaskQueu
 		"blk/s", fmt.Sprintf("%.1f", speedBlock),
 		"tx/s", fmt.Sprintf("%.1f", speedTx),
 		"resultCh", fmt.Sprintf("%d/%d", len(resultCh), cap(resultCh)),
-		"resultQueue", rws.Len(),
+		"resultQueue", fmt.Sprintf("%d/%d", rws.Len(), queueSize),
 		"resultsSize", common.ByteCount(resultsSize),
 		"repeatRatio", fmt.Sprintf("%.2f%%", repeatRatio),
 		"buffer", fmt.Sprintf("%s/%s", common.ByteCount(sizeEstimate), common.ByteCount(p.commitThreshold)),
@@ -198,7 +198,7 @@ func Exec3(ctx context.Context,
 						rwsReceiveCond.Signal()
 					}()
 				case <-logEvery.C:
-					progress.Log(execStage.LogPrefix(), rs, rws, rs.DoneCount(), inputBlockNum.Load(), outputBlockNum.Load(), repeatCount.Load(), uint64(resultsSize.Load()), resultCh)
+					progress.Log(execStage.LogPrefix(), rs, rws, uint64(queueSize), rs.DoneCount(), inputBlockNum.Load(), outputBlockNum.Load(), repeatCount.Load(), uint64(resultsSize.Load()), resultCh)
 					sizeEstimate := rs.SizeEstimate()
 					//prevTriggerCount = triggerCount
 					if sizeEstimate >= commitThreshold {
@@ -320,20 +320,22 @@ loop:
 			}()
 		}
 		txs := b.Transactions()
+		skipAnalysis := core.SkipAnalysis(chainConfig, blockNum)
 		for txIndex := -1; txIndex <= len(txs); txIndex++ {
 			// Do not oversend, wait for the result heap to go under certain size
 			txTask := &state.TxTask{
-				BlockNum:  blockNum,
-				Rules:     rules,
-				Block:     b,
-				TxNum:     inputTxNum,
-				TxIndex:   txIndex,
-				BlockHash: b.Hash(),
-				Final:     txIndex == len(txs),
+				BlockNum:     blockNum,
+				Rules:        rules,
+				Block:        b,
+				TxNum:        inputTxNum,
+				TxIndex:      txIndex,
+				BlockHash:    b.Hash(),
+				SkipAnalysis: skipAnalysis,
+				Final:        txIndex == len(txs),
 			}
 			if txIndex >= 0 && txIndex < len(txs) {
 				txTask.Tx = txs[txIndex]
-				txTask.TxAsMessage, err = txTask.Tx.AsMessage(*types.MakeSigner(chainConfig, txTask.BlockNum), txTask.Block.Header().BaseFee, txTask.Rules)
+				txTask.TxAsMessage, err = txTask.Tx.AsMessage(*types.MakeSigner(chainConfig, txTask.BlockNum), txTask.Block.HeaderNoCopy().BaseFee, txTask.Rules)
 				if err != nil {
 					panic(err)
 				}
@@ -404,7 +406,7 @@ loop:
 		// Check for interrupts
 		select {
 		case <-logEvery.C:
-			progress.Log(execStage.LogPrefix(), rs, rws, count, inputBlockNum.Load(), outputBlockNum.Load(), repeatCount.Load(), uint64(resultsSize.Load()), resultCh)
+			progress.Log(execStage.LogPrefix(), rs, rws, uint64(queueSize), count, inputBlockNum.Load(), outputBlockNum.Load(), repeatCount.Load(), uint64(resultsSize.Load()), resultCh)
 		case <-interruptCh:
 			log.Info(fmt.Sprintf("interrupted, please wait for cleanup, next run will start with block %d", blockNum))
 			maxTxNum.Store(inputTxNum)
@@ -815,21 +817,23 @@ func ReconstituteState(ctx context.Context, s *StageState, dirs datadir.Dirs, wo
 			return err
 		}
 		txs := b.Transactions()
+		skipAnalysis := core.SkipAnalysis(chainConfig, blockNum)
 		for txIndex := -1; txIndex <= len(txs); txIndex++ {
 			if bitmap.Contains(inputTxNum) {
 				binary.BigEndian.PutUint64(txKey[:], inputTxNum)
 				txTask := &state.TxTask{
-					BlockNum:  bn,
-					Block:     b,
-					Rules:     rules,
-					TxNum:     inputTxNum,
-					TxIndex:   txIndex,
-					BlockHash: b.Hash(),
-					Final:     txIndex == len(txs),
+					BlockNum:     bn,
+					Block:        b,
+					Rules:        rules,
+					TxNum:        inputTxNum,
+					TxIndex:      txIndex,
+					BlockHash:    b.Hash(),
+					SkipAnalysis: skipAnalysis,
+					Final:        txIndex == len(txs),
 				}
 				if txIndex >= 0 && txIndex < len(txs) {
 					txTask.Tx = txs[txIndex]
-					txTask.TxAsMessage, err = txTask.Tx.AsMessage(*types.MakeSigner(chainConfig, txTask.BlockNum), txTask.Block.Header().BaseFee, txTask.Rules)
+					txTask.TxAsMessage, err = txTask.Tx.AsMessage(*types.MakeSigner(chainConfig, txTask.BlockNum), txTask.Block.HeaderNoCopy().BaseFee, txTask.Rules)
 					if err != nil {
 						panic(err)
 					}
