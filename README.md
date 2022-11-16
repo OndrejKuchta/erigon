@@ -50,10 +50,10 @@ System Requirements
 ===================
 
 * For an Archive node of Ethereum Mainnet we recommend >=3TB storage space: 1.8TB state (as of March 2022),
-  200GB temp files (can symlink or mount folder `<datadir>/etl-tmp` to another disk). Ethereum Mainnet Full node (
+  200GB temp files (can symlink or mount folder `<datadir>/temp` to another disk). Ethereum Mainnet Full node (
   see `--prune*` flags): 400Gb (April 2022).
 
-* Goerli Full node (see `--prune*` flags): 189GB on Beta, 114GB on Alpha (April 2022)..
+* Goerli Full node (see `--prune*` flags): 189GB on Beta, 114GB on Alpha (April 2022).
 
 * BSC Archive: 7TB. BSC Full: 1TB.
 
@@ -62,7 +62,11 @@ System Requirements
 SSD or NVMe. Do not recommend HDD - on HDD Erigon will always stay N blocks behind chain tip, but not fall behind.
 Bear in mind that SSD performance deteriorates when close to capacity.
 
-RAM: >=16GB, 64-bit architecture, [Golang version >= 1.18](https://golang.org/doc/install), GCC 10+
+RAM: >=16GB, 64-bit architecture.
+
+[Golang version >= 1.18](https://golang.org/doc/install).
+
+GCC 10+.
 
 <code>🔬 more details on disk storage [here](https://erigon.substack.com/p/disk-footprint-changes-in-new-erigon?s=r)
 and [here](https://ledgerwatch.github.io/turbo_geth_release.html#Disk-space).</code>
@@ -100,7 +104,7 @@ Use `--datadir` to choose where to store data.
 
 Use `--chain=bor-mainnet` for Polygon Mainnet and `--chain=mumbai` for Polygon Mumbai.
 
-Running `make help` will list and describe the convenience commands available in the [Makefile](./Makefile)
+Running `make help` will list and describe the convenience commands available in the [Makefile](./Makefile).
 
 ### Logging
 
@@ -137,6 +141,10 @@ Same true about: JSON RPC layer (RPCDaemon), p2p layer (Sentry), history downloa
 Don't start services as separated processes unless you have clear reason for it: resource limiting, scale, replace by
 your own implementation, security.
 How to start Erigon's services as separated processes, see in [docker-compose.yml](./docker-compose.yml).
+
+### Embedded Consensus Layer
+
+By default the Engine API is disabled in favour of Erigon native Embedded Consensus Layer, if you want to either stake or sync an external Consensus Layer, run Erigon with flag `--externalcl`.
 
 ### Optional stages
 
@@ -513,13 +521,14 @@ Detailed explanation: [./docs/programmers_guide/db_faq.md](./docs/programmers_gu
 
 | Port  | Protocol  |        Purpose         | Expose  |
 |:-----:|:---------:|:----------------------:|:-------:|
-| 30303 | TCP & UDP |  eth/66 or 67 peering  | Public  |
+| 30303 | TCP & UDP |     eth/66 peering     | Public  |
+| 30304 | TCP & UDP |     eth/67 peering     | Public  |
 | 9090  |    TCP    |    gRPC Connections    | Private |
 | 42069 | TCP & UDP | Snap sync (Bittorrent) | Public  |
 | 6060  |    TCP    |    Metrics or Pprof    | Private |
 | 8551  |    TCP    | Engine API (JWT auth)  | Private |
 
-Typically, 30303 is exposed to the internet to allow incoming peering connections. 9090 is exposed only
+Typically, 30303 and 30304 are exposed to the internet to allow incoming peering connections. 9090 is exposed only
 internally for rpcdaemon or other connections, (e.g. rpcdaemon -> erigon).
 Port 8551 (JWT authenticated) is exposed only internally for [Engine API] JSON-RPC queries from the Consensus Layer
 node.
@@ -543,6 +552,15 @@ port.
 Typically, a sentry process will run one eth/xx protocol (e.g. eth/66) and will be exposed to the internet on 30303.
 Port
 9091 is for internal gRCP connections (e.g erigon -> sentry).
+
+#### `sentinel` ports
+
+| Port  | Protocol  |     Purpose      | Expose  |
+|:-----:|:---------:|:----------------:|:-------:|
+| 4000  |    UDP    |     Peering      | Public  |
+| 4001  |    TCP    |     Peering      | Public  |
+| 7777  |    TCP    | gRPC Connections | Private |
+
 
 #### Other ports
 

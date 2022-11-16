@@ -6,11 +6,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/ledgerwatch/erigon/cmd/utils"
-	"github.com/ledgerwatch/erigon/internal/debug"
-	"github.com/ledgerwatch/erigon/internal/logging"
 	"github.com/spf13/cobra"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v2"
+
+	"github.com/ledgerwatch/erigon/cmd/utils"
+	"github.com/ledgerwatch/erigon/turbo/debug"
+	"github.com/ledgerwatch/erigon/turbo/logging"
 )
 
 type CommandFlags struct {

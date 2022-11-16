@@ -118,31 +118,6 @@ var (
 		ChainID:               big.NewInt(1337),
 		Consensus:             EtHashConsensus,
 		HomesteadBlock:        big.NewInt(0),
-		DAOForkBlock:          nil,
-		DAOForkSupport:        false,
-		TangerineWhistleBlock: big.NewInt(0),
-		TangerineWhistleHash:  common.Hash{},
-		SpuriousDragonBlock:   big.NewInt(0),
-		ByzantiumBlock:        big.NewInt(0),
-		ConstantinopleBlock:   big.NewInt(0),
-		PetersburgBlock:       big.NewInt(0),
-		IstanbulBlock:         big.NewInt(0),
-		MuirGlacierBlock:      big.NewInt(0),
-		BerlinBlock:           big.NewInt(0),
-		LondonBlock:           nil,
-		ArrowGlacierBlock:     nil,
-		Ethash:                new(EthashConfig),
-		Clique:                nil,
-	}
-
-	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
-	// and accepted by the Ethereum core developers into the Clique consensus.
-	AllCliqueProtocolChanges = &ChainConfig{
-		ChainID:               big.NewInt(1337),
-		Consensus:             CliqueConsensus,
-		HomesteadBlock:        big.NewInt(0),
-		DAOForkBlock:          nil,
-		DAOForkSupport:        false,
 		TangerineWhistleBlock: big.NewInt(0),
 		TangerineWhistleHash:  common.Hash{},
 		SpuriousDragonBlock:   big.NewInt(0),
@@ -153,8 +128,27 @@ var (
 		MuirGlacierBlock:      big.NewInt(0),
 		BerlinBlock:           big.NewInt(0),
 		LondonBlock:           big.NewInt(0),
-		ArrowGlacierBlock:     nil,
-		Ethash:                nil,
+		ArrowGlacierBlock:     big.NewInt(0),
+		GrayGlacierBlock:      big.NewInt(0),
+		Ethash:                new(EthashConfig),
+	}
+
+	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
+	// and accepted by the Ethereum core developers into the Clique consensus.
+	AllCliqueProtocolChanges = &ChainConfig{
+		ChainID:               big.NewInt(1337),
+		Consensus:             CliqueConsensus,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		TangerineWhistleHash:  common.Hash{},
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		MuirGlacierBlock:      big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
 		Clique:                &CliqueConfig{Period: 0, Epoch: 30000},
 	}
 
@@ -169,11 +163,9 @@ var (
 	CliqueSnapshot = NewSnapshotConfig(10, 1024, 16384, true, "")
 
 	TestChainConfig = &ChainConfig{
-		ChainID:               big.NewInt(1),
+		ChainID:               big.NewInt(1337),
 		Consensus:             EtHashConsensus,
 		HomesteadBlock:        big.NewInt(0),
-		DAOForkBlock:          nil,
-		DAOForkSupport:        false,
 		TangerineWhistleBlock: big.NewInt(0),
 		TangerineWhistleHash:  common.Hash{},
 		SpuriousDragonBlock:   big.NewInt(0),
@@ -183,18 +175,13 @@ var (
 		IstanbulBlock:         big.NewInt(0),
 		MuirGlacierBlock:      big.NewInt(0),
 		BerlinBlock:           big.NewInt(0),
-		LondonBlock:           nil,
-		ArrowGlacierBlock:     nil,
 		Ethash:                new(EthashConfig),
-		Clique:                nil,
 	}
 
 	TestChainAuraConfig = &ChainConfig{
 		ChainID:               big.NewInt(1),
 		Consensus:             AuRaConsensus,
 		HomesteadBlock:        big.NewInt(0),
-		DAOForkBlock:          nil,
-		DAOForkSupport:        false,
 		TangerineWhistleBlock: big.NewInt(0),
 		TangerineWhistleHash:  common.Hash{},
 		SpuriousDragonBlock:   big.NewInt(0),
@@ -204,8 +191,6 @@ var (
 		IstanbulBlock:         big.NewInt(0),
 		MuirGlacierBlock:      big.NewInt(0),
 		BerlinBlock:           big.NewInt(0),
-		LondonBlock:           nil,
-		ArrowGlacierBlock:     nil,
 		Aura:                  &AuRaConfig{},
 	}
 
@@ -264,6 +249,9 @@ type ChainConfig struct {
 
 	// Gnosis Chain fork blocks
 	PosdaoBlock *big.Int `json:"posdaoBlock,omitempty"`
+
+	Eip1559FeeCollector           *common.Address `json:"eip1559FeeCollector,omitempty"`           // (Optional) Address where burnt EIP-1559 fees go to
+	Eip1559FeeCollectorTransition *big.Int        `json:"eip1559FeeCollectorTransition,omitempty"` // (Optional) Block from which burnt EIP-1559 fees go to the Eip1559FeeCollector
 
 	// Various consensus engines
 	Ethash *EthashConfig `json:"ethash,omitempty"`
@@ -327,8 +315,7 @@ type BorConfig struct {
 
 	OverrideStateSyncRecords map[string]int         `json:"overrideStateSyncRecords"` // override state records count
 	BlockAlloc               map[string]interface{} `json:"blockAlloc"`
-	BurntContract            map[string]string      `json:"burntContract"` // governance contract where the token will be sent to and burnt in london fork
-	JaipurBlock              uint64                 `json:"jaipurBlock"`   // Jaipur switch block (nil = no fork, 0 = already on jaipur)
+	JaipurBlock              uint64                 `json:"jaipurBlock"` // Jaipur switch block (nil = no fork, 0 = already on jaipur)
 }
 
 // String implements the stringer interface, returning the consensus engine details.
@@ -362,22 +349,6 @@ func (c *BorConfig) calculateBorConfigHelper(field map[string]uint64, number uin
 		}
 	}
 	return field[keys[len(keys)-1]]
-}
-
-func (c *BorConfig) CalculateBurntContract(number uint64) string {
-	keys := make([]string, 0, len(c.BurntContract))
-	for k := range c.BurntContract {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for i := 0; i < len(keys)-1; i++ {
-		valUint, _ := strconv.ParseUint(keys[i], 10, 64)
-		valUintNext, _ := strconv.ParseUint(keys[i+1], 10, 64)
-		if number > valUint && number < valUintNext {
-			return c.BurntContract[keys[i]]
-		}
-	}
-	return c.BurntContract[keys[len(keys)-1]]
 }
 
 // String implements the fmt.Stringer interface.
@@ -618,6 +589,10 @@ func (c *ChainConfig) IsCancun(num uint64) bool {
 	return isForked(c.CancunBlock, num)
 }
 
+func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
+	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)
+}
+
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
 func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *ConfigCompatError {
@@ -843,9 +818,9 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon       bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsLondon, IsShanghai, IsCancun                bool
+	IsNano, IsMoran                                         bool
+	IsEip1559FeeCollector                                   bool
 	IsParlia, IsStarknet, IsAura                            bool
-	IsNano                                                  bool
-	IsMoran                                                 bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -855,22 +830,23 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 		chainID = new(big.Int)
 	}
 	return &Rules{
-		ChainID:            new(big.Int).Set(chainID),
-		IsHomestead:        c.IsHomestead(num),
-		IsTangerineWhistle: c.IsTangerineWhistle(num),
-		IsSpuriousDragon:   c.IsSpuriousDragon(num),
-		IsByzantium:        c.IsByzantium(num),
-		IsConstantinople:   c.IsConstantinople(num),
-		IsPetersburg:       c.IsPetersburg(num),
-		IsIstanbul:         c.IsIstanbul(num),
-		IsBerlin:           c.IsBerlin(num),
-		IsLondon:           c.IsLondon(num),
-		IsShanghai:         c.IsShanghai(num),
-		IsCancun:           c.IsCancun(num),
-		IsNano:             c.IsNano(num),
-		IsMoran:            c.IsMoran(num),
-		IsParlia:           c.Parlia != nil,
-		IsAura:             c.Aura != nil,
+		ChainID:               new(big.Int).Set(chainID),
+		IsHomestead:           c.IsHomestead(num),
+		IsTangerineWhistle:    c.IsTangerineWhistle(num),
+		IsSpuriousDragon:      c.IsSpuriousDragon(num),
+		IsByzantium:           c.IsByzantium(num),
+		IsConstantinople:      c.IsConstantinople(num),
+		IsPetersburg:          c.IsPetersburg(num),
+		IsIstanbul:            c.IsIstanbul(num),
+		IsBerlin:              c.IsBerlin(num),
+		IsLondon:              c.IsLondon(num),
+		IsShanghai:            c.IsShanghai(num),
+		IsCancun:              c.IsCancun(num),
+		IsNano:                c.IsNano(num),
+		IsMoran:               c.IsMoran(num),
+		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),
+		IsParlia:              c.Parlia != nil,
+		IsAura:                c.Aura != nil,
 	}
 }
 

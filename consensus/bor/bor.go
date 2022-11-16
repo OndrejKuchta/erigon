@@ -820,11 +820,12 @@ func (c *Bor) FinalizeAndAssemble(chainConfig *params.ChainConfig, header *types
 	return block, nil, types.Receipts{}, nil
 }
 
-func (c *Bor) GenerateSeal(chain consensus.ChainHeaderReader, currnt, parent *types.Header, call consensus.Call) []rlp.RawValue {
+func (c *Bor) GenerateSeal(chain consensus.ChainHeaderReader, currnt, parent *types.Header, call consensus.Call) []byte {
 	return nil
 }
 
-func (c *Bor) Initialize(config *params.ChainConfig, chain consensus.ChainHeaderReader, e consensus.EpochReader, header *types.Header, txs []types.Transaction, uncles []*types.Header, syscall consensus.SystemCall) {
+func (c *Bor) Initialize(config *params.ChainConfig, chain consensus.ChainHeaderReader, e consensus.EpochReader, header *types.Header,
+	state *state.IntraBlockState, txs []types.Transaction, uncles []*types.Header, syscall consensus.SystemCall) {
 }
 
 // Authorize injects a private key into the consensus engine to mint new blocks
@@ -927,8 +928,7 @@ func (c *Bor) Seal(chain consensus.ChainHeaderReader, block *types.Block, result
 // 	return new(big.Int).SetUint64(snap.Difficulty(c.signer))
 // }
 
-func (c *Bor) CalcDifficulty(chain consensus.ChainHeaderReader, _, _ uint64, _ *big.Int, parentNumber uint64, parentHash, _ common.Hash, _ []rlp.RawValue) *big.Int {
-
+func (c *Bor) CalcDifficulty(chain consensus.ChainHeaderReader, _, _ uint64, _ *big.Int, parentNumber uint64, parentHash, _ common.Hash, _ uint64) *big.Int {
 	snap, err := c.snapshot(chain, parentNumber, parentHash, nil)
 	if err != nil {
 		return nil
@@ -939,6 +939,10 @@ func (c *Bor) CalcDifficulty(chain consensus.ChainHeaderReader, _, _ uint64, _ *
 // SealHash returns the hash of a block prior to it being sealed.
 func (c *Bor) SealHash(header *types.Header) common.Hash {
 	return SealHash(header, c.config)
+}
+
+func (c *Bor) IsServiceTransaction(sender common.Address, syscall consensus.SystemCall) bool {
+	return false
 }
 
 // APIs implements consensus.Engine, returning the user facing RPC API to allow

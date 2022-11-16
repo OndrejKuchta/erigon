@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,20 +42,28 @@ import (
 	prototypes "github.com/ledgerwatch/erigon-lib/gointerfaces/types"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/kvcache"
+	"github.com/ledgerwatch/erigon-lib/kv/memdb"
 	"github.com/ledgerwatch/erigon-lib/kv/remotedbserver"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
 	txpool2 "github.com/ledgerwatch/erigon-lib/txpool"
 	"github.com/ledgerwatch/erigon-lib/txpool/txpooluitl"
 	types2 "github.com/ledgerwatch/erigon-lib/types"
+	"github.com/ledgerwatch/log/v3"
+	"golang.org/x/exp/slices"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/ledgerwatch/erigon/cl/clparams"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloader"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloader/downloadercfg"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloadergrpc"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/clparams"
+	clcore "github.com/ledgerwatch/erigon/cmd/erigon-cl/cl-core"
 	"github.com/ledgerwatch/erigon/cmd/lightclient/lightclient"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/service"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/cli"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/commands"
+	"github.com/ledgerwatch/erigon/cmd/sentinel/sentinel"
+	"github.com/ledgerwatch/erigon/cmd/sentinel/sentinel/service"
 	"github.com/ledgerwatch/erigon/cmd/sentry/sentry"
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/debug"
@@ -90,11 +99,6 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync/snap"
 	stages2 "github.com/ledgerwatch/erigon/turbo/stages"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
-	"github.com/ledgerwatch/log/v3"
-	"golang.org/x/exp/slices"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Config contains the configuration options of the ETH protocol.
@@ -153,6 +157,16 @@ type Ethereum struct {
 	agg *libstate.Aggregator22
 }
 
+func splitAddrIntoHostAndPort(addr string) (host string, port int, err error) {
+	idx := strings.LastIndexByte(addr, ':')
+	if idx < 0 {
+		return "", 0, errors.New("invalid address format")
+	}
+	host = addr[:idx]
+	port, err = strconv.Atoi(addr[idx+1:])
+	return
+}
+
 // New creates a new Ethereum object (including the
 // initialisation of the common Ethereum object)
 func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethereum, error) {
@@ -171,10 +185,6 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 	chainKv, err := node.OpenDatabase(stack.Config(), logger, kv.ChainDB)
 	if err != nil {
 		return nil, err
-	}
-
-	if config.Genesis != nil && config.Genesis.Config != nil {
-		types.SetHeaderSealFlag(config.Genesis.Config.IsHeaderWithSeal())
 	}
 
 	var currentBlock *types.Block
@@ -205,7 +215,6 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 	}
 	config.Snapshot.Enabled = ethconfig.UseSnapshotsByChainName(chainConfig.ChainName) && config.Sync.UseSnapshots
 
-	types.SetHeaderSealFlag(chainConfig.IsHeaderWithSeal())
 	log.Info("Initialised chain configuration", "config", chainConfig, "genesis", genesis.Hash())
 
 	// Apply special hacks for BSC params
@@ -300,12 +309,22 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 		if err != nil {
 			return nil, err
 		}
-		cfg := stack.Config().P2P
-		cfg.NodeDatabase = filepath.Join(stack.Config().Dirs.Nodes, eth.ProtocolToString[cfg.ProtocolVersion])
-		server := sentry.NewGrpcServer(backend.sentryCtx, discovery, readNodeInfo, &cfg, cfg.ProtocolVersion)
 
-		backend.sentryServers = append(backend.sentryServers, server)
-		sentries = []direct.SentryClient{direct.NewSentryClientDirect(cfg.ProtocolVersion, server)}
+		refCfg := stack.Config().P2P
+		listenHost, listenPort, err := splitAddrIntoHostAndPort(refCfg.ListenAddr)
+		if err != nil {
+			return nil, err
+		}
+		for _, protocol := range refCfg.ProtocolVersion {
+			cfg := refCfg
+			cfg.NodeDatabase = filepath.Join(stack.Config().Dirs.Nodes, eth.ProtocolToString[protocol])
+			cfg.ListenAddr = fmt.Sprintf("%s:%d", listenHost, listenPort)
+			listenPort++
+
+			server := sentry.NewGrpcServer(backend.sentryCtx, discovery, readNodeInfo, &cfg, protocol)
+			backend.sentryServers = append(backend.sentryServers, server)
+			sentries = append(sentries, direct.NewSentryClientDirect(protocol, server))
+		}
 
 		go func() {
 			logEvery := time.NewTicker(120 * time.Second)
@@ -390,13 +409,13 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 	}
 
 	var miningRPC txpool_proto.MiningServer
+	stateDiffClient := direct.NewStateDiffClientDirect(kvRPC)
 	if config.DeprecatedTxPool.Disable {
 		backend.txPool2GrpcServer = &txpool2.GrpcDisabled{}
 	} else {
 		//cacheConfig := kvcache.DefaultCoherentCacheConfig
 		//cacheConfig.MetricsLabel = "txpool"
 
-		stateDiffClient := direct.NewStateDiffClientDirect(kvRPC)
 		backend.newTxs2 = make(chan types2.Hashes, 1024)
 		//defer close(newTxs)
 		backend.txPool2DB, backend.txPool2, backend.txPool2Fetch, backend.txPool2Send, backend.txPool2GrpcServer, err = txpooluitl.AllComponents(
@@ -456,48 +475,8 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 		blockReader, chainConfig, assembleBlockPOS, backend.sentriesClient.Hd, config.Miner.EnabledPOS)
 	miningRPC = privateapi.NewMiningServer(ctx, backend, ethashApi)
 
-	if config.CL {
-		// Chains supported are Sepolia, Mainnet and Goerli
-		if config.NetworkID == 1 || config.NetworkID == 5 || config.NetworkID == 11155111 {
-			genesisCfg, networkCfg, beaconCfg := clparams.GetConfigsByNetwork(clparams.NetworkType(config.NetworkID))
-			if err != nil {
-				return nil, err
-			}
-			client, err := service.StartSentinelService(&sentinel.SentinelConfig{
-				IpAddr:        "127.0.0.1",
-				Port:          4000,
-				TCPPort:       4001,
-				GenesisConfig: genesisCfg,
-				NetworkConfig: networkCfg,
-				BeaconConfig:  beaconCfg,
-			}, &service.ServerConfig{Network: "tcp", Addr: "localhost:7777"})
-			if err != nil {
-				return nil, err
-			}
-
-			lc, err := lightclient.NewLightClient(ctx, genesisCfg, beaconCfg, ethBackendRPC, client, currentBlockNumber, false)
-			if err != nil {
-				return nil, err
-			}
-			bs, err := lightclient.RetrieveBeaconState(ctx,
-				clparams.GetCheckpointSyncEndpoint(clparams.NetworkType(config.NetworkID)))
-
-			if err != nil {
-				return nil, err
-			}
-
-			if err := lc.BootstrapCheckpoint(ctx, bs.FinalizedCheckpoint.Root); err != nil {
-				return nil, err
-			}
-
-			go lc.Start()
-		} else {
-			log.Warn("Cannot run lightclient on a non-supported chain. only goerli, sepolia and mainnet are allowed")
-		}
-	}
-
+	var creds credentials.TransportCredentials
 	if stack.Config().PrivateApiAddr != "" {
-		var creds credentials.TransportCredentials
 		if stack.Config().TLSConnection {
 			creds, err = grpcutil.TLS(stack.Config().TLSCACert, stack.Config().TLSCertFile, stack.Config().TLSKeyFile)
 			if err != nil {
@@ -516,6 +495,42 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 		if err != nil {
 			return nil, fmt.Errorf("private api: %w", err)
 		}
+	}
+
+	// If we choose not to run a consensus layer, run our embedded.
+	if !config.CL && clparams.Supported(config.NetworkID) {
+		genesisCfg, networkCfg, beaconCfg := clparams.GetConfigsByNetwork(clparams.NetworkType(config.NetworkID))
+		if err != nil {
+			return nil, err
+		}
+		client, err := service.StartSentinelService(&sentinel.SentinelConfig{
+			IpAddr:        config.LightClientDiscoveryAddr,
+			Port:          int(config.LightClientDiscoveryPort),
+			TCPPort:       uint(config.LightClientDiscoveryTCPPort),
+			GenesisConfig: genesisCfg,
+			NetworkConfig: networkCfg,
+			BeaconConfig:  beaconCfg,
+		}, chainKv, &service.ServerConfig{Network: "tcp", Addr: fmt.Sprintf("%s:%d", config.SentinelAddr, config.SentinelPort)}, creds)
+		if err != nil {
+			return nil, err
+		}
+
+		lc, err := lightclient.NewLightClient(ctx, memdb.New(), genesisCfg, beaconCfg, ethBackendRPC, client, currentBlockNumber, false)
+		if err != nil {
+			return nil, err
+		}
+		bs, err := clcore.RetrieveBeaconState(ctx,
+			clparams.GetCheckpointSyncEndpoint(clparams.NetworkType(config.NetworkID)))
+
+		if err != nil {
+			return nil, err
+		}
+
+		if err := lc.BootstrapCheckpoint(ctx, bs.FinalizedCheckpoint.Root); err != nil {
+			return nil, err
+		}
+
+		go lc.Start()
 	}
 
 	if currentBlock == nil {
@@ -631,7 +646,7 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 	}
 	// start HTTP API
 	httpRpcCfg := stack.Config().Http
-	ethRpcClient, txPoolRpcClient, miningRpcClient, stateCache, ff, err := cli.EmbeddedServices(ctx, chainKv, httpRpcCfg.StateCache, blockReader, allSnapshots, backend.agg, ethBackendRPC, backend.txPool2GrpcServer, miningRPC)
+	ethRpcClient, txPoolRpcClient, miningRpcClient, stateCache, ff, err := cli.EmbeddedServices(ctx, chainKv, httpRpcCfg.StateCache, blockReader, ethBackendRPC, backend.txPool2GrpcServer, miningRPC, stateDiffClient)
 	if err != nil {
 		return nil, err
 	}
@@ -873,6 +888,9 @@ func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snCo
 
 	allSnapshots := snapshotsync.NewRoSnapshots(snConfig, dirs.Snap)
 	var err error
+	if !snConfig.NoDownloader {
+		allSnapshots.OptimisticalyReopenWithDB(s.chainDB)
+	}
 	blockReader := snapshotsync.NewBlockReaderWithSnapshots(allSnapshots)
 
 	if !snConfig.NoDownloader {

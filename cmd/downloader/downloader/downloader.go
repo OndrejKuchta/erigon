@@ -13,10 +13,10 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
 	common2 "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/dir"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloader/downloadercfg"
-	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/log/v3"
 	mdbx2 "github.com/torquem-ch/mdbx-go/mdbx"
 	"go.uber.org/atomic"
@@ -61,7 +61,7 @@ func New(cfg *downloadercfg.Cfg) (*Downloader, error) {
 	// To provide such consistent view - downloader does:
 	// add <datadir>/snapshots/tmp - then method .onComplete will remove this suffix
 	// and App only work with <datadir>/snapshot s folder
-	if common.FileExist(cfg.DataDir + "_tmp") { // migration from prev versions
+	if dir.FileExist(cfg.DataDir + "_tmp") { // migration from prev versions
 		_ = os.Rename(cfg.DataDir+"_tmp", filepath.Join(cfg.DataDir, "tmp")) // ignore error, because maybe they are on different drive, or target folder already created manually, all is fine
 	}
 	if err := moveFromTmp(cfg.DataDir); err != nil {
@@ -132,7 +132,8 @@ func (d *Downloader) ReCalcStats(interval time.Duration) {
 			stats.BytesCompleted += uint64(t.BytesCompleted())
 			stats.BytesTotal += uint64(t.Length())
 			if !t.Complete.Bool() {
-				log.Debug("[downloader] file not downloaded yet", "name", t.Name())
+				progress := float32(float64(100) * (float64(t.BytesCompleted()) / float64(t.Length())))
+				log.Debug("[downloader] file not downloaded yet", "name", t.Name(), "progress", fmt.Sprintf("%.2f%%", progress))
 			}
 		default:
 			log.Debug("[downloader] file has no metadata yet", "name", t.Name())
@@ -160,7 +161,7 @@ func (d *Downloader) ReCalcStats(interval time.Duration) {
 
 func moveFromTmp(snapDir string) error {
 	tmpDir := filepath.Join(snapDir, "tmp")
-	if !common.FileExist(tmpDir) {
+	if !dir.FileExist(tmpDir) {
 		return nil
 	}
 
@@ -207,6 +208,7 @@ func (d *Downloader) verify() error {
 		wg.Add(1)
 		go func(t *torrent.Torrent) {
 			defer wg.Done()
+			<-t.GotInfo()
 			for i := 0; i < t.NumPieces(); i++ {
 				j.Inc()
 				t.Piece(i).VerifyData()

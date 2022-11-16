@@ -13,6 +13,8 @@ import (
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/kvcache"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
+	"github.com/ledgerwatch/log/v3"
+
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/hexutil"
 	"github.com/ledgerwatch/erigon/common/math"
@@ -20,12 +22,11 @@ import (
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
 	ethFilters "github.com/ledgerwatch/erigon/eth/filters"
-	"github.com/ledgerwatch/erigon/internal/ethapi"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/rpc"
+	ethapi2 "github.com/ledgerwatch/erigon/turbo/adapter/ethapi"
 	"github.com/ledgerwatch/erigon/turbo/rpchelper"
 	"github.com/ledgerwatch/erigon/turbo/services"
-	"github.com/ledgerwatch/log/v3"
 )
 
 // EthAPI is a collection of functions that are exposed in the
@@ -77,14 +78,14 @@ type EthAPI interface {
 	GasPrice(_ context.Context) (*hexutil.Big, error)
 
 	// Sending related (see ./eth_call.go)
-	Call(ctx context.Context, args ethapi.CallArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *ethapi.StateOverrides) (hexutil.Bytes, error)
-	EstimateGas(ctx context.Context, argsOrNil *ethapi.CallArgs, blockNrOrHash *rpc.BlockNumberOrHash) (hexutil.Uint64, error)
+	Call(ctx context.Context, args ethapi2.CallArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *ethapi2.StateOverrides) (hexutil.Bytes, error)
+	EstimateGas(ctx context.Context, argsOrNil *ethapi2.CallArgs, blockNrOrHash *rpc.BlockNumberOrHash) (hexutil.Uint64, error)
 	SendRawTransaction(ctx context.Context, encodedTx hexutil.Bytes) (common.Hash, error)
 	SendTransaction(_ context.Context, txObject interface{}) (common.Hash, error)
 	Sign(ctx context.Context, _ common.Address, _ hexutil.Bytes) (hexutil.Bytes, error)
 	SignTransaction(_ context.Context, txObject interface{}) (common.Hash, error)
 	GetProof(ctx context.Context, address common.Address, storageKeys []string, blockNr rpc.BlockNumber) (*interface{}, error)
-	CreateAccessList(ctx context.Context, args ethapi.CallArgs, blockNrOrHash *rpc.BlockNumberOrHash, optimizeGas *bool) (*accessListResult, error)
+	CreateAccessList(ctx context.Context, args ethapi2.CallArgs, blockNrOrHash *rpc.BlockNumberOrHash, optimizeGas *bool) (*accessListResult, error)
 
 	// Mining related (see ./eth_mining.go)
 	Coinbase(ctx context.Context) (common.Address, error)
@@ -262,6 +263,7 @@ type APIImpl struct {
 	ethBackend rpchelper.ApiBackend
 	txPool     txpool.TxpoolClient
 	mining     txpool.MiningClient
+	gasCache   *GasPriceCache
 	db         kv.RoDB
 	GasCap     uint64
 }
@@ -278,6 +280,7 @@ func NewEthAPI(base *BaseAPI, db kv.RoDB, eth rpchelper.ApiBackend, txPool txpoo
 		ethBackend: eth,
 		txPool:     txPool,
 		mining:     mining,
+		gasCache:   NewGasPriceCache(),
 		GasCap:     gascap,
 	}
 }
@@ -407,4 +410,34 @@ func newRPCRawTransactionFromBlockIndex(b *types.Block, index uint64) (hexutil.B
 	var buf bytes.Buffer
 	err := txs[index].MarshalBinary(&buf)
 	return buf.Bytes(), err
+}
+
+type GasPriceCache struct {
+	latestPrice *big.Int
+	latestHash  common.Hash
+	mtx         sync.Mutex
+}
+
+func NewGasPriceCache() *GasPriceCache {
+	return &GasPriceCache{
+		latestPrice: big.NewInt(0),
+		latestHash:  common.Hash{},
+	}
+}
+
+func (c *GasPriceCache) GetLatest() (common.Hash, *big.Int) {
+	var hash common.Hash
+	var price *big.Int
+	c.mtx.Lock()
+	hash = c.latestHash
+	price = c.latestPrice
+	c.mtx.Unlock()
+	return hash, price
+}
+
+func (c *GasPriceCache) SetLatest(hash common.Hash, price *big.Int) {
+	c.mtx.Lock()
+	c.latestPrice = price
+	c.latestHash = hash
+	c.mtx.Unlock()
 }
