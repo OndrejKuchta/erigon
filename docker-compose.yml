@@ -80,7 +80,7 @@ services:
 
 
   prysm:
-    image: gcr.io/prysmaticlabs/prysm/beacon-chain:v3.1.1
+    image: gcr.io/prysmaticlabs/prysm/beacon-chain:v3.1.2
     user: ${DOCKER_UID:-1000}:${DOCKER_GID:-1000} # Uses erigon user from Dockerfile
     command: --datadir=/prysm-data --rpc-host=0.0.0.0 --monitoring-host=0.0.0.0 --execution-endpoint=http://erigon:8551 --jwt-secret=/home/erigon/.local/share/erigon/jwt.hex --accept-terms-of-use --grpc-gateway-host=0.0.0.0 --grpc-gateway-corsdomain='*' --checkpoint-sync-url=https://beaconstate.info --genesis-beacon-api-url=https://beaconstate.info
     ports:
