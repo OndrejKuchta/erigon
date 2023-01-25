@@ -66,7 +66,7 @@ func runLightClientNode(cliCtx *cli.Context) error {
 			return err
 		}
 	}
-	state, err := core.RetrieveBeaconState(ctx, cfg.CheckpointUri)
+	state, err := core.RetrieveBeaconState(ctx, cfg.BeaconCfg, cfg.GenesisCfg, cfg.CheckpointUri)
 	if err != nil {
 		return err
 	}
@@ -86,10 +86,10 @@ func runLightClientNode(cliCtx *cli.Context) error {
 		NoDiscovery:   cfg.NoDiscovery,
 	}, db, &service.ServerConfig{Network: cfg.ServerProtocol, Addr: cfg.ServerAddr}, nil, &cltypes.Status{
 		ForkDigest:     forkDigest,
-		FinalizedRoot:  state.FinalizedCheckpoint.Root,
-		FinalizedEpoch: state.FinalizedCheckpoint.Epoch,
-		HeadSlot:       state.FinalizedCheckpoint.Epoch * 32,
-		HeadRoot:       state.FinalizedCheckpoint.Root,
+		FinalizedRoot:  state.FinalizedCheckpoint().Root,
+		FinalizedEpoch: state.FinalizedCheckpoint().Epoch,
+		HeadSlot:       state.FinalizedCheckpoint().Epoch * 32,
+		HeadRoot:       state.FinalizedCheckpoint().Root,
 	}, handshake.LightClientRule)
 	if err != nil {
 		log.Error("Could not start sentinel", "err", err)
@@ -110,8 +110,9 @@ func runLightClientNode(cliCtx *cli.Context) error {
 	lc, err := lightclient.NewLightClient(ctx, db, cfg.GenesisCfg, cfg.BeaconCfg, nil, sentinel, 0, true)
 	if err != nil {
 		log.Error("Could not make Lightclient", "err", err)
+		return err
 	}
-	if err := lc.BootstrapCheckpoint(ctx, state.FinalizedCheckpoint.Root); err != nil {
+	if err := lc.BootstrapCheckpoint(ctx, state.FinalizedCheckpoint().Root); err != nil {
 		log.Error("[Bootstrap] failed to bootstrap", "err", err)
 		return err
 	}

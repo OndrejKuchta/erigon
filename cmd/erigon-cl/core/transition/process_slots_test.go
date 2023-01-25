@@ -4,9 +4,12 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/ledgerwatch/erigon/cl/clparams"
 	"github.com/ledgerwatch/erigon/cl/cltypes"
+	"github.com/ledgerwatch/erigon/cmd/erigon-cl/core/state"
 )
 
 var (
@@ -39,19 +42,29 @@ var (
 	blockHashValidator1 = "f5b74f03650fb65362badf85660ab2f6e92e8df10af9a981a2b5a4df1d9f2479"
 )
 
-func getTestBeaconBlock() *cltypes.SignedBeaconBlockBellatrix {
-	return &cltypes.SignedBeaconBlockBellatrix{
-		Block: &cltypes.BeaconBlockBellatrix{
+func getEmptyBlock() *cltypes.SignedBeaconBlock {
+	return &cltypes.SignedBeaconBlock{
+		Block: &cltypes.BeaconBlock{
+			Body: &cltypes.BeaconBody{
+				Eth1Data:         &cltypes.Eth1Data{},
+				SyncAggregate:    &cltypes.SyncAggregate{},
+				ExecutionPayload: emptyBlock,
+				Version:          clparams.BellatrixVersion,
+			},
+		},
+	}
+}
+
+func getTestBeaconBlock() *cltypes.SignedBeaconBlock {
+	return &cltypes.SignedBeaconBlock{
+		Block: &cltypes.BeaconBlock{
 			ProposerIndex: 0,
-			Body: &cltypes.BeaconBodyBellatrix{
-				Graffiti: make([]byte, 32),
-				SyncAggregate: &cltypes.SyncAggregate{
-					SyncCommiteeBits: make([]byte, 64),
-				},
-				ExecutionPayload: &cltypes.ExecutionPayload{
-					LogsBloom:     make([]byte, 256),
-					BaseFeePerGas: make([]byte, 32),
-				},
+			Body: &cltypes.BeaconBody{
+				Eth1Data:         &cltypes.Eth1Data{},
+				Graffiti:         make([]byte, 32),
+				SyncAggregate:    &cltypes.SyncAggregate{},
+				ExecutionPayload: emptyBlock,
+				Version:          clparams.BellatrixVersion,
 			},
 			StateRoot: testStateRoot,
 		},
@@ -59,71 +72,59 @@ func getTestBeaconBlock() *cltypes.SignedBeaconBlockBellatrix {
 	}
 }
 
-func getTestBeaconState() *cltypes.BeaconState {
-	return &cltypes.BeaconState{
-		BlockRoots:        make([][32]byte, 8192),
-		StateRoots:        make([][32]byte, 8192),
-		RandaoMixes:       make([][32]byte, 65536),
-		Slashings:         make([]uint64, 8192),
-		JustificationBits: make([]byte, 1),
-		CurrentSyncCommittee: &cltypes.SyncCommittee{
-			PubKeys: make([][48]byte, 512),
-		},
-		NextSyncCommittee: &cltypes.SyncCommittee{
-			PubKeys: make([][48]byte, 512),
-		},
-		LatestExecutionPayloadHeader: &cltypes.ExecutionHeader{
-			LogsBloom:     make([]byte, 256),
-			BaseFeePerGas: make([]byte, 32),
-		},
-		LatestBlockHeader: &cltypes.BeaconBlockHeader{
-			Root: [32]byte{},
-		},
-		Fork:                        &cltypes.Fork{},
-		Eth1Data:                    &cltypes.Eth1Data{},
-		PreviousJustifiedCheckpoint: &cltypes.Checkpoint{},
-		CurrentJustifiedCheckpoint:  &cltypes.Checkpoint{},
-		FinalizedCheckpoint:         &cltypes.Checkpoint{},
-	}
+func getTestBeaconState() *state.BeaconState {
+	return state.GetEmptyBeaconState()
 }
 
-func getTestBeaconStateWithValidator() *cltypes.BeaconState {
+func getEmptyInvalidBeaconState() *state.BeaconState {
+	b := state.GetEmptyBeaconState()
+	b.SetCurrentSyncCommittee(&cltypes.SyncCommittee{})
+	return b // Invalid public key length
+}
+
+func assertStateEq(t *testing.T, got *state.BeaconState, expected *state.BeaconState) {
+	assert.Equal(t, got.LatestExecutionPayloadHeader(), expected.LatestExecutionPayloadHeader())
+
+}
+
+func getTestBeaconStateWithValidator() *state.BeaconState {
 	res := getTestBeaconState()
-	res.Validators = append(res.Validators, testValidator)
-	res.Validators[0].WithdrawalCredentials = make([]byte, 32)
+	res.SetValidators([]*cltypes.Validator{testValidator})
 	return res
 }
 
-func prepareNextBeaconState(t *testing.T, slots []uint64, stateHashs, blockHashs []string, nextState *cltypes.BeaconState) *cltypes.BeaconState {
+func prepareNextBeaconState(t *testing.T, slots []uint64, stateHashs, blockHashs []string, nextState *state.BeaconState) *state.BeaconState {
 	// Set slot to initial index.
 	for i, val := range slots {
-		nextState.Slot = val
+		nextState.SetSlot(val)
 		hash, err := hex.DecodeString(stateHashs[i])
 		if err != nil {
 			t.Fatalf("unable to decode test hash: %v", err)
 		}
-		copy(nextState.StateRoots[val][:], hash)
+		nextState.SetStateRootAt(int(val), libcommon.BytesToHash(hash))
+		latestBlockHeader := nextState.LatestBlockHeader()
 		// Only copy if the previous is empty.
-		if nextState.LatestBlockHeader.Root == [32]byte{} {
-			copy(nextState.LatestBlockHeader.Root[:], hash)
+		if latestBlockHeader.Root == [32]byte{} {
+			latestBlockHeader.Root = libcommon.BytesToHash(hash)
+			nextState.SetLatestBlockHeader(latestBlockHeader)
 		}
 		hash, err = hex.DecodeString(blockHashs[i])
 		if err != nil {
 			t.Fatalf("unable to decode test hash: %v", err)
 		}
-		copy(nextState.BlockRoots[val][:], hash)
+		nextState.SetBlockRootAt(int(val), libcommon.BytesToHash(hash))
 	}
-	nextState.Slot = slots[len(slots)-1] + 1
+	nextState.SetSlot(slots[len(slots)-1] + 1)
 	return nextState
 }
 
 func TestTransitionSlot(t *testing.T) {
 	slot42 := getTestBeaconState()
-	slot42.Slot = 42
+	slot42.SetSlot(42)
 	testCases := []struct {
 		description   string
-		prevState     *cltypes.BeaconState
-		expectedState *cltypes.BeaconState
+		prevState     *state.BeaconState
+		expectedState *state.BeaconState
 		wantErr       bool
 	}{
 		{
@@ -152,7 +153,7 @@ func TestTransitionSlot(t *testing.T) {
 		},
 		{
 			description:   "failure_empty_state",
-			prevState:     &cltypes.BeaconState{},
+			prevState:     getEmptyInvalidBeaconState(),
 			expectedState: nil,
 			wantErr:       true,
 		},
@@ -161,7 +162,7 @@ func TestTransitionSlot(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			s := New(tc.prevState, testBeaconConfig, nil)
-			err := s.transitionSlot(tc.prevState)
+			err := s.transitionSlot()
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("unexpected success, wanted error")
@@ -174,21 +175,19 @@ func TestTransitionSlot(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 			// Manually increase the slot by one.
-			tc.prevState.Slot += 1
-			if got := tc.prevState; !cmp.Equal(got, tc.expectedState) {
-				t.Errorf("unexpected result state: %v", cmp.Diff(got, tc.expectedState))
-			}
+			tc.prevState.SetSlot(tc.prevState.Slot() + 1)
+			assertStateEq(t, tc.prevState, tc.expectedState)
 		})
 	}
 }
 
 func TestProcessSlots(t *testing.T) {
 	slot42 := getTestBeaconState()
-	slot42.Slot = 42
+	slot42.SetSlot(42)
 	testCases := []struct {
 		description   string
-		prevState     *cltypes.BeaconState
-		expectedState *cltypes.BeaconState
+		prevState     *state.BeaconState
+		expectedState *state.BeaconState
 		numSlots      uint64
 		startSlot     uint64
 		wantErr       bool
@@ -231,7 +230,7 @@ func TestProcessSlots(t *testing.T) {
 		},
 		{
 			description:   "error_empty_state",
-			prevState:     &cltypes.BeaconState{},
+			prevState:     getEmptyInvalidBeaconState(),
 			expectedState: nil,
 			startSlot:     0,
 			numSlots:      1,
@@ -242,7 +241,7 @@ func TestProcessSlots(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			s := New(tc.prevState, testBeaconConfig, nil)
-			err := s.processSlots(tc.prevState, tc.startSlot+tc.numSlots)
+			err := s.processSlots(tc.startSlot + tc.numSlots)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("unexpected success, wanted error")
@@ -254,9 +253,7 @@ func TestProcessSlots(t *testing.T) {
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			if got := tc.prevState; !cmp.Equal(got, tc.expectedState) {
-				t.Errorf("unexpected result state: %v", cmp.Diff(got, tc.expectedState))
-			}
+			assertStateEq(t, tc.prevState, tc.expectedState)
 		})
 	}
 }
@@ -266,8 +263,8 @@ func TestVerifyBlockSignature(t *testing.T) {
 	badSigBlock.Signature = badSignature
 	testCases := []struct {
 		description string
-		state       *cltypes.BeaconState
-		block       *cltypes.SignedBeaconBlockBellatrix
+		state       *state.BeaconState
+		block       *cltypes.SignedBeaconBlock
 		wantValid   bool
 		wantErr     bool
 	}{
@@ -281,12 +278,8 @@ func TestVerifyBlockSignature(t *testing.T) {
 		{
 			description: "failure_empty_block",
 			state:       getTestBeaconStateWithValidator(),
-			block: &cltypes.SignedBeaconBlockBellatrix{
-				Block: &cltypes.BeaconBlockBellatrix{
-					Body: &cltypes.BeaconBodyBellatrix{},
-				},
-			},
-			wantErr: true,
+			block:       getEmptyBlock(),
+			wantErr:     true,
 		},
 		{
 			description: "failure_bad_signature",
@@ -300,7 +293,7 @@ func TestVerifyBlockSignature(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			s := New(tc.state, testBeaconConfig, nil)
-			valid, err := s.verifyBlockSignature(tc.state, tc.block)
+			valid, err := s.verifyBlockSignature(tc.block)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("unexpected success, wanted error")
@@ -326,12 +319,12 @@ func TestTransitionState(t *testing.T) {
 	badSigBlock := getTestBeaconBlock()
 	badSigBlock.Signature = badSignature
 	badStateRootBlock := getTestBeaconBlock()
-	badStateRootBlock.Block.StateRoot = [32]byte{}
+	badStateRootBlock.Block.StateRoot = libcommon.Hash{}
 	testCases := []struct {
 		description   string
-		prevState     *cltypes.BeaconState
-		block         *cltypes.SignedBeaconBlockBellatrix
-		expectedState *cltypes.BeaconState
+		prevState     *state.BeaconState
+		block         *cltypes.SignedBeaconBlock
+		expectedState *state.BeaconState
 		wantErr       bool
 	}{
 		{
@@ -350,12 +343,8 @@ func TestTransitionState(t *testing.T) {
 		{
 			description: "error_empty_block_body",
 			prevState:   getTestBeaconStateWithValidator(),
-			block: &cltypes.SignedBeaconBlockBellatrix{
-				Block: &cltypes.BeaconBlockBellatrix{
-					Body: &cltypes.BeaconBodyBellatrix{},
-				},
-			},
-			wantErr: true,
+			block:       getEmptyBlock(),
+			wantErr:     true,
 		},
 		{
 			description: "error_bad_signature",
@@ -374,7 +363,7 @@ func TestTransitionState(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			s := New(tc.prevState, testBeaconConfig, nil)
-			err := s.transitionState(tc.prevState, tc.block, true)
+			err := s.transitionState(tc.block, true)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("unexpected success, wanted error")
@@ -386,9 +375,7 @@ func TestTransitionState(t *testing.T) {
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			if got := tc.prevState; !cmp.Equal(got, tc.expectedState) {
-				t.Errorf("unexpected result state: %v", cmp.Diff(got, tc.expectedState))
-			}
+			assertStateEq(t, tc.prevState, tc.expectedState)
 		})
 	}
 }

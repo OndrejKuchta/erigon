@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/core/state"
-	"github.com/ledgerwatch/erigon/params"
-	"github.com/ledgerwatch/erigon/params/networkname"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/log/v3"
+
+	"github.com/ledgerwatch/erigon/core/state"
+	"github.com/ledgerwatch/erigon/params/networkname"
 )
 
 type UpgradeConfig struct {
 	BeforeUpgrade upgradeHook
 	AfterUpgrade  upgradeHook
-	ContractAddr  common.Address
+	ContractAddr  libcommon.Address
 	CommitUrl     string
 	Code          string
 }
@@ -25,34 +26,34 @@ type Upgrade struct {
 	Configs     []*UpgradeConfig
 }
 
-type upgradeHook func(blockNumber *big.Int, contractAddr common.Address, statedb *state.IntraBlockState) error
-
-const (
-	mainNet    = "Mainnet"
-	chapelNet  = "Chapel"
-	rialtoNet  = "Rialto"
-	defaultNet = "Default"
-)
+type upgradeHook func(blockNumber *big.Int, contractAddr libcommon.Address, statedb *state.IntraBlockState) error
 
 var (
 	//upgrade config
-	ramanujanUpgrade = make(map[string]*Upgrade)
+	RamanujanUpgrade = make(map[string]*Upgrade)
 
-	nielsUpgrade = make(map[string]*Upgrade)
+	NielsUpgrade = make(map[string]*Upgrade)
 
-	mirrorUpgrade = make(map[string]*Upgrade)
+	MirrorUpgrade = make(map[string]*Upgrade)
 
-	brunoUpgrade = make(map[string]*Upgrade)
+	BrunoUpgrade = make(map[string]*Upgrade)
 
-	eulerUpgrade = make(map[string]*Upgrade)
+	EulerUpgrade = make(map[string]*Upgrade)
 
-	gibbsUpgrade = make(map[string]*Upgrade)
+	GibbsUpgrade = make(map[string]*Upgrade)
 
-	moranUpgrade = make(map[string]*Upgrade)
+	MoranUpgrade = make(map[string]*Upgrade)
+
+	// SystemContractCodeLookup is used to address a flaw in the upgrade logic of the system contracts. Since they are updated directly, without first being self-destructed
+	// and then re-created, the usual incarnation logic does not get activated, and all historical records of the code of these contracts are retrieved as the most
+	// recent version. This problem will not exist in erigon3, but until then, a workaround will be used to access code of such contracts through this structure
+	// Lookup is performed first by chain name, then by contract address. The value in the map is the list of CodeRecords, with increasing block numbers,
+	// to be used in binary search to determine correct historical code
+	SystemContractCodeLookup = map[string]map[libcommon.Address][]libcommon.CodeRecord{}
 )
 
 func init() {
-	ramanujanUpgrade[rialtoNet] = &Upgrade{
+	RamanujanUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "ramanujan",
 		Configs: []*UpgradeConfig{
 			{
@@ -108,7 +109,7 @@ func init() {
 		},
 	}
 
-	ramanujanUpgrade[chapelNet] = &Upgrade{
+	RamanujanUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "ramanujan",
 		Configs: []*UpgradeConfig{
 			{
@@ -164,7 +165,7 @@ func init() {
 		},
 	}
 
-	nielsUpgrade[chapelNet] = &Upgrade{
+	NielsUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "niels",
 		Configs: []*UpgradeConfig{
 			{
@@ -220,7 +221,7 @@ func init() {
 		},
 	}
 
-	mirrorUpgrade[mainNet] = &Upgrade{
+	MirrorUpgrade[networkname.BSCChainName] = &Upgrade{
 		UpgradeName: "mirror",
 		Configs: []*UpgradeConfig{
 			{
@@ -241,7 +242,7 @@ func init() {
 		},
 	}
 
-	mirrorUpgrade[chapelNet] = &Upgrade{
+	MirrorUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "mirror",
 		Configs: []*UpgradeConfig{
 			{
@@ -262,7 +263,7 @@ func init() {
 		},
 	}
 
-	mirrorUpgrade[rialtoNet] = &Upgrade{
+	MirrorUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "mirror",
 		Configs: []*UpgradeConfig{
 			{
@@ -283,7 +284,7 @@ func init() {
 		},
 	}
 
-	brunoUpgrade[mainNet] = &Upgrade{
+	BrunoUpgrade[networkname.BSCChainName] = &Upgrade{
 		UpgradeName: "bruno",
 		Configs: []*UpgradeConfig{
 			{
@@ -294,7 +295,7 @@ func init() {
 		},
 	}
 
-	brunoUpgrade[chapelNet] = &Upgrade{
+	BrunoUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "bruno",
 		Configs: []*UpgradeConfig{
 			{
@@ -305,7 +306,7 @@ func init() {
 		},
 	}
 
-	brunoUpgrade[rialtoNet] = &Upgrade{
+	BrunoUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "bruno",
 		Configs: []*UpgradeConfig{
 			{
@@ -316,7 +317,7 @@ func init() {
 		},
 	}
 
-	eulerUpgrade[mainNet] = &Upgrade{
+	EulerUpgrade[networkname.BSCChainName] = &Upgrade{
 		UpgradeName: "euler",
 		Configs: []*UpgradeConfig{
 			{
@@ -332,7 +333,7 @@ func init() {
 		},
 	}
 
-	eulerUpgrade[chapelNet] = &Upgrade{
+	EulerUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "euler",
 		Configs: []*UpgradeConfig{
 			{
@@ -348,7 +349,7 @@ func init() {
 		},
 	}
 
-	eulerUpgrade[rialtoNet] = &Upgrade{
+	EulerUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "euler",
 		Configs: []*UpgradeConfig{
 			{
@@ -364,7 +365,7 @@ func init() {
 		},
 	}
 
-	gibbsUpgrade[chapelNet] = &Upgrade{
+	GibbsUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "gibbs",
 		Configs: []*UpgradeConfig{
 			{
@@ -380,7 +381,7 @@ func init() {
 		},
 	}
 
-	gibbsUpgrade[rialtoNet] = &Upgrade{
+	GibbsUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "gibbs",
 		Configs: []*UpgradeConfig{
 			{
@@ -396,7 +397,7 @@ func init() {
 		},
 	}
 
-	gibbsUpgrade[mainNet] = &Upgrade{
+	GibbsUpgrade[networkname.BSCChainName] = &Upgrade{
 		UpgradeName: "gibbs",
 		Configs: []*UpgradeConfig{
 			{
@@ -412,7 +413,7 @@ func init() {
 		},
 	}
 
-	moranUpgrade[mainNet] = &Upgrade{
+	MoranUpgrade[networkname.BSCChainName] = &Upgrade{
 		UpgradeName: "moran",
 		Configs: []*UpgradeConfig{
 			{
@@ -433,7 +434,7 @@ func init() {
 		},
 	}
 
-	moranUpgrade[chapelNet] = &Upgrade{
+	MoranUpgrade[networkname.ChapelChainName] = &Upgrade{
 		UpgradeName: "moran",
 		Configs: []*UpgradeConfig{
 			{
@@ -454,7 +455,7 @@ func init() {
 		},
 	}
 
-	moranUpgrade[rialtoNet] = &Upgrade{
+	MoranUpgrade[networkname.RialtoChainName] = &Upgrade{
 		UpgradeName: "moran",
 		Configs: []*UpgradeConfig{
 			{
@@ -476,49 +477,38 @@ func init() {
 	}
 }
 
-func UpgradeBuildInSystemContract(config *params.ChainConfig, blockNumber *big.Int, statedb *state.IntraBlockState) {
+func UpgradeBuildInSystemContract(config *chain.Config, blockNumber *big.Int, statedb *state.IntraBlockState) {
 	if config == nil || blockNumber == nil || statedb == nil {
 		return
 	}
-	var network string
-	switch config.ChainName {
-	case networkname.BSCChainName:
-		network = mainNet
-	case networkname.ChapelChainName:
-		network = chapelNet
-	case networkname.RialtoChainName:
-		network = rialtoNet
-	default:
-		network = defaultNet
-	}
 
-	logger := log.New("system-contract-upgrade", network)
+	logger := log.New("system-contract-upgrade", config.ChainName)
 	if config.IsOnRamanujan(blockNumber) {
-		applySystemContractUpgrade(ramanujanUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(RamanujanUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	if config.IsOnNiels(blockNumber) {
-		applySystemContractUpgrade(nielsUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(NielsUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	if config.IsOnMirrorSync(blockNumber) {
-		applySystemContractUpgrade(mirrorUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(MirrorUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	if config.IsOnBruno(blockNumber) {
-		applySystemContractUpgrade(brunoUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(BrunoUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	if config.IsOnEuler(blockNumber) {
-		applySystemContractUpgrade(eulerUpgrade[network], blockNumber, statedb, logger)
-	}
-
-	if config.IsOnGibbs(blockNumber) {
-		applySystemContractUpgrade(gibbsUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(EulerUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	if config.IsOnMoran(blockNumber) {
-		applySystemContractUpgrade(moranUpgrade[network], blockNumber, statedb, logger)
+		applySystemContractUpgrade(MoranUpgrade[config.ChainName], blockNumber, statedb, logger)
+	}
+
+	if config.IsOnGibbs(blockNumber) {
+		applySystemContractUpgrade(GibbsUpgrade[config.ChainName], blockNumber, statedb, logger)
 	}
 
 	/*

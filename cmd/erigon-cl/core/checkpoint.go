@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/ledgerwatch/erigon/cl/cltypes"
+	"github.com/ledgerwatch/erigon/cl/clparams"
+	"github.com/ledgerwatch/erigon/cl/utils"
+	"github.com/ledgerwatch/erigon/cmd/erigon-cl/core/state"
 	"github.com/ledgerwatch/log/v3"
 )
 
-func RetrieveBeaconState(ctx context.Context, uri string) (*cltypes.BeaconState, error) {
+func RetrieveBeaconState(ctx context.Context, beaconConfig *clparams.BeaconChainConfig, genesisConfig *clparams.GenesisConfig, uri string) (*state.BeaconState, error) {
 	log.Info("[Checkpoint Sync] Requesting beacon state", "uri", uri)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
@@ -35,8 +37,12 @@ func RetrieveBeaconState(ctx context.Context, uri string) (*cltypes.BeaconState,
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint sync failed %s", err)
 	}
-	beaconState := &cltypes.BeaconState{}
-	err = beaconState.UnmarshalSSZ(marshaled)
+
+	epoch := utils.GetCurrentEpoch(genesisConfig.GenesisTime, beaconConfig.SecondsPerSlot, beaconConfig.SlotsPerEpoch)
+
+	beaconState := &state.BeaconState{}
+	fmt.Println(int(beaconConfig.GetCurrentStateVersion(epoch)))
+	err = beaconState.DecodeSSZWithVersion(marshaled, int(beaconConfig.GetCurrentStateVersion(epoch)))
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint sync failed %s", err)
 	}
