@@ -40,8 +40,7 @@ func RetrieveBeaconState(ctx context.Context, beaconConfig *clparams.BeaconChain
 
 	epoch := utils.GetCurrentEpoch(genesisConfig.GenesisTime, beaconConfig.SecondsPerSlot, beaconConfig.SlotsPerEpoch)
 
-	beaconState := &state.BeaconState{}
-	fmt.Println(int(beaconConfig.GetCurrentStateVersion(epoch)))
+	beaconState := state.New(beaconConfig)
 	err = beaconState.DecodeSSZWithVersion(marshaled, int(beaconConfig.GetCurrentStateVersion(epoch)))
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint sync failed %s", err)

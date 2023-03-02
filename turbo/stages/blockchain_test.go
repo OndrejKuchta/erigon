@@ -27,17 +27,14 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/chain"
+	chain2 "github.com/ledgerwatch/erigon-lib/chain"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
+	types2 "github.com/ledgerwatch/erigon-lib/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/ledgerwatch/erigon/ethdb/prune"
-	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
-
-	chain2 "github.com/ledgerwatch/erigon-lib/chain"
 
 	"github.com/ledgerwatch/erigon/common/hexutil"
 	"github.com/ledgerwatch/erigon/common/u256"
@@ -48,7 +45,9 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/crypto"
+	"github.com/ledgerwatch/erigon/ethdb/prune"
 	"github.com/ledgerwatch/erigon/params"
+	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
 	"github.com/ledgerwatch/erigon/turbo/stages"
 )
 
@@ -491,7 +490,7 @@ func TestChainTxReorgs(t *testing.T) {
 			t.Errorf("drop %d: receipt %v found while shouldn't have been", i, rcpt)
 		}
 	}
-	br := snapshotsync.NewBlockReaderWithSnapshots(m.BlockSnapshots)
+	br := snapshotsync.NewBlockReaderWithSnapshots(m.BlockSnapshots, m.TransactionsV3)
 
 	// added tx
 	txs = types.Transactions{pastAdd, freshAdd, futureAdd}
@@ -794,7 +793,7 @@ func doModesTest(t *testing.T, pm prune.Mode) error {
 		require.Equal(uint64(0), found.Minimum())
 	}
 
-	br := snapshotsync.NewBlockReaderWithSnapshots(m.BlockSnapshots)
+	br := snapshotsync.NewBlockReaderWithSnapshots(m.BlockSnapshots, m.TransactionsV3)
 
 	if pm.TxIndex.Enabled() {
 		b, err := rawdb.ReadBlockByNumber(tx, 1)
@@ -1426,8 +1425,18 @@ func TestCVE2020_26265(t *testing.T) {
 		funds   = big.NewInt(1000000000)
 
 		aa        = libcommon.HexToAddress("0x000000000000000000000000000000000000aaaa")
-		aaStorage = make(map[libcommon.Hash]libcommon.Hash)         // Initial storage in AA
-		aaCode    = []byte{byte(vm.ADDRESS), byte(vm.SELFDESTRUCT)} // Code for AA (selfdestruct to itself)
+		aaStorage = make(map[libcommon.Hash]libcommon.Hash) // Initial storage in AA
+		aaCode    = []byte{
+			byte(vm.CALLVALUE),
+			byte(vm.PUSH1), 0x06, // Destination for JUMPI
+			byte(vm.JUMPI),
+			byte(vm.ADDRESS),
+			byte(vm.SELFDESTRUCT),
+			byte(vm.JUMPDEST),
+			byte(vm.SELFBALANCE),
+			byte(vm.PUSH1), 0x00,
+			byte(vm.SSTORE),
+		} // Code for AAAA (selfdestruct to itself, but only when CALLVALUE is 0)
 
 		caller        = libcommon.HexToAddress("0x000000000000000000000000000000000000bbbb")
 		callerStorage = make(map[libcommon.Hash]libcommon.Hash) // Initial storage in CALLER
@@ -1952,7 +1961,7 @@ func TestEIP2718Transition(t *testing.T) {
 				},
 				GasPrice: gasPrice,
 			},
-			AccessList: types.AccessList{{
+			AccessList: types2.AccessList{{
 				Address:     aa,
 				StorageKeys: []libcommon.Hash{{0}},
 			}},
@@ -2038,7 +2047,7 @@ func TestEIP1559Transition(t *testing.T) {
 		}
 		if i == 500 {
 			// One transaction to 0xAAAA
-			accesses := types.AccessList{types.AccessTuple{
+			accesses := types2.AccessList{types2.AccessTuple{
 				Address:     aa,
 				StorageKeys: []libcommon.Hash{{0}},
 			}}

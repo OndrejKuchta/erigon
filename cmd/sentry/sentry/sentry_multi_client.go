@@ -244,27 +244,27 @@ func pumpStreamLoop[TMessage interface{}](
 // MultiClient - does handle request/response/subscriptions to multiple sentries
 // each sentry may support same or different p2p protocol
 type MultiClient struct {
-	lock          sync.RWMutex
-	Hd            *headerdownload.HeaderDownload
-	Bd            *bodydownload.BodyDownload
-	IsMock        bool
-	forkValidator *engineapi.ForkValidator
-	nodeName      string
-	sentries      []direct.SentryClient
-	headHeight    uint64
-	headTime      uint64
-	headHash      libcommon.Hash
-	headTd        *uint256.Int
-	ChainConfig   *chain.Config
-	heightForks   []uint64
-	timeForks     []uint64
-	genesisHash   libcommon.Hash
-	networkId     uint64
-	db            kv.RwDB
-	Engine        consensus.Engine
-	blockReader   services.HeaderAndCanonicalReader
-	logPeerInfo   bool
-	passivePeers  bool
+	lock                              sync.RWMutex
+	Hd                                *headerdownload.HeaderDownload
+	Bd                                *bodydownload.BodyDownload
+	IsMock                            bool
+	forkValidator                     *engineapi.ForkValidator
+	nodeName                          string
+	sentries                          []direct.SentryClient
+	headHeight                        uint64
+	headTime                          uint64
+	headHash                          libcommon.Hash
+	headTd                            *uint256.Int
+	ChainConfig                       *chain.Config
+	heightForks                       []uint64
+	timeForks                         []uint64
+	genesisHash                       libcommon.Hash
+	networkId                         uint64
+	db                                kv.RwDB
+	Engine                            consensus.Engine
+	blockReader                       services.HeaderAndCanonicalReader
+	logPeerInfo                       bool
+	sendHeaderRequestsToMultiplePeers bool
 
 	historyV3 bool
 }
@@ -300,17 +300,17 @@ func NewMultiClient(
 	bd := bodydownload.NewBodyDownload(engine, int(syncCfg.BodyCacheLimit))
 
 	cs := &MultiClient{
-		nodeName:      nodeName,
-		Hd:            hd,
-		Bd:            bd,
-		sentries:      sentries,
-		db:            db,
-		Engine:        engine,
-		blockReader:   blockReader,
-		logPeerInfo:   logPeerInfo,
-		forkValidator: forkValidator,
-		historyV3:     historyV3,
-		passivePeers:  chainConfig.TerminalTotalDifficultyPassed,
+		nodeName:                          nodeName,
+		Hd:                                hd,
+		Bd:                                bd,
+		sentries:                          sentries,
+		db:                                db,
+		Engine:                            engine,
+		blockReader:                       blockReader,
+		logPeerInfo:                       logPeerInfo,
+		forkValidator:                     forkValidator,
+		historyV3:                         historyV3,
+		sendHeaderRequestsToMultiplePeers: chainConfig.TerminalTotalDifficultyPassed,
 	}
 	cs.ChainConfig = chainConfig
 	cs.heightForks, cs.timeForks = forkid.GatherForks(cs.ChainConfig)
@@ -755,7 +755,7 @@ func (cs *MultiClient) HandlePeerEvent(ctx context.Context, event *proto_sentry.
 	peerIDStr := hex.EncodeToString(peerID[:])
 
 	if !cs.logPeerInfo {
-		log.Trace(fmt.Sprintf("Sentry peer did %s", eventID), "peer", peerIDStr)
+		log.Trace("[p2p] Sentry peer did", "eventID", eventID, "peer", peerIDStr)
 		return nil
 	}
 
@@ -774,7 +774,7 @@ func (cs *MultiClient) HandlePeerEvent(ctx context.Context, event *proto_sentry.
 		}
 	}
 
-	log.Trace(fmt.Sprintf("Sentry peer did %s", eventID), "peer", peerIDStr,
+	log.Trace("[p2p] Sentry peer did", "eventID", eventID, "peer", peerIDStr,
 		"nodeURL", nodeURL, "clientID", clientID, "capabilities", capabilities)
 	return nil
 }
@@ -792,7 +792,6 @@ func (cs *MultiClient) makeStatusData() *proto_sentry.StatusData {
 			HeightForks: s.heightForks,
 			TimeForks:   s.timeForks,
 		},
-		PassivePeers: cs.passivePeers,
 	}
 }
 

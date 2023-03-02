@@ -19,7 +19,6 @@ import (
 	"github.com/ledgerwatch/erigon-lib/chain"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/datadir"
-	"github.com/ledgerwatch/erigon-lib/common/dbg"
 	"github.com/ledgerwatch/erigon-lib/common/dir"
 	"github.com/ledgerwatch/erigon-lib/direct"
 	downloader3 "github.com/ledgerwatch/erigon-lib/downloader"
@@ -57,7 +56,6 @@ import (
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/cli"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/commands"
 	"github.com/ledgerwatch/erigon/cmd/sentry/sentry"
-	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/debug"
 	"github.com/ledgerwatch/erigon/consensus"
 	"github.com/ledgerwatch/erigon/consensus/bor"
@@ -147,7 +145,7 @@ type Ethereum struct {
 
 	txPool2DB               kv.RwDB
 	txPool2                 *txpool2.TxPool
-	newTxs2                 chan types2.Hashes
+	newTxs2                 chan types2.Announcements
 	txPool2Fetch            *txpool2.Fetch
 	txPool2Send             *txpool2.Send
 	txPool2GrpcServer       txpool_proto.TxpoolServer
@@ -162,7 +160,7 @@ type Ethereum struct {
 // New creates a new Ethereum object (including the
 // initialisation of the common Ethereum object)
 func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethereum, error) {
-	if config.Miner.GasPrice == nil || config.Miner.GasPrice.Cmp(common.Big0) <= 0 {
+	if config.Miner.GasPrice == nil || config.Miner.GasPrice.Cmp(libcommon.Big0) <= 0 {
 		log.Warn("Sanitizing invalid miner gas price", "provided", config.Miner.GasPrice, "updated", ethconfig.Defaults.Miner.GasPrice)
 		config.Miner.GasPrice = new(big.Int).Set(ethconfig.Defaults.Miner.GasPrice)
 	}
@@ -195,7 +193,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 			genesisSpec = nil
 		}
 		var genesisErr error
-		chainConfig, genesis, genesisErr = core.WriteGenesisBlock(tx, genesisSpec, config.OverrideShanghaiTime)
+		chainConfig, genesis, genesisErr = core.WriteGenesisBlock(tx, genesisSpec, config.OverrideShanghaiTime, tmpdir)
 		if _, ok := genesisErr.(*chain.ConfigCompatError); genesisErr != nil && !ok {
 			return genesisErr
 		}
@@ -205,7 +203,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 	}); err != nil {
 		panic(err)
 	}
-	config.Snapshot.Enabled = ethconfig.UseSnapshotsByChainName(chainConfig.ChainName) && config.Sync.UseSnapshots
+	config.Snapshot.Enabled = config.Sync.UseSnapshots
 
 	log.Info("Initialised chain configuration", "config", chainConfig, "genesis", genesis.Hash())
 
@@ -233,11 +231,16 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 			return err
 		}
 
+		config.TransactionsV3, err = kvcfg.TransactionsV3.WriteOnce(tx, config.TransactionsV3)
+		if err != nil {
+			return err
+		}
+
 		// if we are in the incorrect syncmode then we change it to the appropriate one
 		if !isCorrectSync {
 			log.Warn("Incorrect snapshot enablement", "got", config.Sync.UseSnapshots, "change_to", useSnapshots)
 			config.Sync.UseSnapshots = useSnapshots
-			config.Snapshot.Enabled = ethconfig.UseSnapshotsByChainName(chainConfig.ChainName) && useSnapshots
+			config.Snapshot.Enabled = useSnapshots
 		}
 		log.Info("Effective", "prune_flags", config.Prune.String(), "snapshot_flags", config.Snapshot.String(), "history.v3", config.HistoryV3)
 
@@ -266,17 +269,15 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 			Accumulator: shards.NewAccumulator(),
 		},
 	}
-	fmt.Printf("dbg1: %s\n", dbg.Stack())
 	var (
 		allSnapshots *snapshotsync.RoSnapshots
 		agg          *libstate.AggregatorV3
 	)
-	backend.blockReader, allSnapshots, agg, err = backend.setUpBlockReader(ctx, config.Dirs, config.Snapshot, config.Downloader)
+	backend.blockReader, allSnapshots, agg, err = backend.setUpBlockReader(ctx, config.Dirs, config.Snapshot, config.Downloader, config.TransactionsV3)
 	if err != nil {
 		return nil, err
 	}
 	backend.agg = agg
-	fmt.Printf("dbg2: %s\n", dbg.Stack())
 
 	if config.HistoryV3 {
 		backend.chainDB, err = temporal.New(backend.chainDB, agg, accounts.ConvertV3toV2, historyv2read.RestoreCodeHash, accounts.DecodeIncarnationFromStorage, systemcontracts.SystemContractCodeLookup[chainConfig.ChainName])
@@ -285,7 +286,6 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 		}
 		chainKv = backend.chainDB
 	}
-	fmt.Printf("dbg3: %s\n", dbg.Stack())
 
 	kvRPC := remotedbserver.NewKvServer(ctx, chainKv, allSnapshots, agg)
 	backend.notifications.StateChangesConsumer = kvRPC
@@ -312,9 +312,12 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 			return res
 		}
 
-		discovery, err := setupDiscovery(backend.config.EthDiscoveryURLs)
-		if err != nil {
-			return nil, err
+		discovery := func() enode.Iterator {
+			d, err := setupDiscovery(backend.config.EthDiscoveryURLs)
+			if err != nil {
+				panic(err)
+			}
+			return d
 		}
 
 		refCfg := stack.Config().P2P
@@ -327,6 +330,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 		for _, protocol := range refCfg.ProtocolVersion {
 			cfg := refCfg
 			cfg.NodeDatabase = filepath.Join(stack.Config().Dirs.Nodes, eth.ProtocolToString[protocol])
+			cfg.TmpDir = stack.Config().Dirs.Tmp
 
 			// pick port from allowed list
 			var picked bool
@@ -366,8 +370,15 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 					return
 				case <-logEvery.C:
 					logItems = logItems[:0]
+					peerCountMap := map[uint]int{}
 					for _, srv := range backend.sentryServers {
-						logItems = append(logItems, eth.ProtocolToString[srv.Protocol.Version], strconv.Itoa(srv.SimplePeerCount()))
+						counts := srv.SimplePeerCount()
+						for protocol, count := range counts {
+							peerCountMap[protocol] += count
+						}
+					}
+					for protocol, count := range peerCountMap {
+						logItems = append(logItems, eth.ProtocolToString[protocol], strconv.Itoa(count))
 					}
 					log.Info("[p2p] GoodPeers", logItems...)
 				}
@@ -416,7 +427,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 	} else {
 		consensusConfig = &config.Ethash
 	}
-	backend.engine = ethconsensusconfig.CreateConsensusEngine(chainConfig, logger, consensusConfig, config.Miner.Notify, config.Miner.Noverify, config.HeimdallURL, config.WithoutHeimdall, stack.DataDir(), allSnapshots, false /* readonly */, backend.chainDB)
+	backend.engine = ethconsensusconfig.CreateConsensusEngine(chainConfig, logger, consensusConfig, config.Miner.Notify, config.Miner.Noverify, config.HeimdallgRPCAddress, config.HeimdallURL, config.WithoutHeimdall, stack.DataDir(), allSnapshots, false /* readonly */, backend.chainDB)
 	backend.forkValidator = engineapi.NewForkValidator(currentBlockNumber, inMemoryExecution, tmpdir)
 
 	if err != nil {
@@ -448,7 +459,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 		//cacheConfig := kvcache.DefaultCoherentCacheConfig
 		//cacheConfig.MetricsLabel = "txpool"
 
-		backend.newTxs2 = make(chan types2.Hashes, 1024)
+		backend.newTxs2 = make(chan types2.Announcements, 1024)
 		//defer close(newTxs)
 		backend.txPool2DB, backend.txPool2, backend.txPool2Fetch, backend.txPool2Send, backend.txPool2GrpcServer, err = txpooluitl.AllComponents(
 			ctx, config.TxPool, kvcache.NewDummy(), backend.newTxs2, backend.chainDB, backend.sentriesClient.Sentries(), stateDiffClient,
@@ -471,7 +482,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 	mining := stagedsync.New(
 		stagedsync.MiningStages(backend.sentryCtx,
 			stagedsync.StageMiningCreateBlockCfg(backend.chainDB, miner, *backend.chainConfig, backend.engine, backend.txPool2, backend.txPool2DB, nil, tmpdir),
-			stagedsync.StageMiningExecCfg(backend.chainDB, miner, backend.notifications.Events, *backend.chainConfig, backend.engine, &vm.Config{}, tmpdir, nil, 0, backend.txPool2, backend.txPool2DB),
+			stagedsync.StageMiningExecCfg(backend.chainDB, miner, backend.notifications.Events, *backend.chainConfig, backend.engine, &vm.Config{}, tmpdir, nil, 0, backend.txPool2, backend.txPool2DB, allSnapshots, config.TransactionsV3),
 			stagedsync.StageHashStateCfg(backend.chainDB, dirs, config.HistoryV3, backend.agg),
 			stagedsync.StageTrieCfg(backend.chainDB, false, true, true, tmpdir, backend.blockReader, nil, config.HistoryV3, backend.agg),
 			stagedsync.StageMiningFinishCfg(backend.chainDB, *backend.chainConfig, backend.engine, miner, backend.miningSealingQuit),
@@ -483,13 +494,13 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 	}
 
 	// proof-of-stake mining
-	assembleBlockPOS := func(param *core.BlockBuilderParameters, interrupt *int32) (*types.Block, error) {
+	assembleBlockPOS := func(param *core.BlockBuilderParameters, interrupt *int32) (*types.BlockWithReceipts, error) {
 		miningStatePos := stagedsync.NewProposingState(&config.Miner)
 		miningStatePos.MiningConfig.Etherbase = param.SuggestedFeeRecipient
 		proposingSync := stagedsync.New(
 			stagedsync.MiningStages(backend.sentryCtx,
 				stagedsync.StageMiningCreateBlockCfg(backend.chainDB, miningStatePos, *backend.chainConfig, backend.engine, backend.txPool2, backend.txPool2DB, param, tmpdir),
-				stagedsync.StageMiningExecCfg(backend.chainDB, miningStatePos, backend.notifications.Events, *backend.chainConfig, backend.engine, &vm.Config{}, tmpdir, interrupt, param.PayloadId, backend.txPool2, backend.txPool2DB),
+				stagedsync.StageMiningExecCfg(backend.chainDB, miningStatePos, backend.notifications.Events, *backend.chainConfig, backend.engine, &vm.Config{}, tmpdir, interrupt, param.PayloadId, backend.txPool2, backend.txPool2DB, allSnapshots, config.TransactionsV3),
 				stagedsync.StageHashStateCfg(backend.chainDB, dirs, config.HistoryV3, backend.agg),
 				stagedsync.StageTrieCfg(backend.chainDB, false, true, true, tmpdir, backend.blockReader, nil, config.HistoryV3, backend.agg),
 				stagedsync.StageMiningFinishCfg(backend.chainDB, *backend.chainConfig, backend.engine, miningStatePos, backend.miningSealingQuit),
@@ -606,7 +617,7 @@ func NewBackend(stack *node.Node, config *ethconfig.Config, logger log.Logger) (
 		return nil, err
 	}
 
-	backend.stagedSync, err = stages3.NewStagedSync(backend.sentryCtx, backend.chainDB, stack.Config().P2P, config, backend.sentriesClient, backend.notifications, backend.downloaderClient, allSnapshots, backend.agg, backend.forkValidator, backend.engine)
+	backend.stagedSync, err = stages3.NewStagedSync(backend.sentryCtx, backend.chainDB, stack.Config().P2P, config, backend.sentriesClient, backend.notifications, backend.downloaderClient, allSnapshots, backend.agg, backend.forkValidator, backend.engine, config.TransactionsV3)
 	if err != nil {
 		return nil, err
 	}
@@ -851,18 +862,13 @@ func (s *Ethereum) NodesInfo(limit int) (*remote.NodesInfoReply, error) {
 }
 
 // sets up blockReader and client downloader
-func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snConfig ethconfig.Snapshot, downloaderCfg *downloadercfg.Cfg) (services.FullBlockReader, *snapshotsync.RoSnapshots, *libstate.AggregatorV3, error) {
-	if !snConfig.Enabled {
-		blockReader := snapshotsync.NewBlockReader()
-		return blockReader, nil, nil, nil
-	}
-
+func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snConfig ethconfig.Snapshot, downloaderCfg *downloadercfg.Cfg, transactionsV3 bool) (services.FullBlockReader, *snapshotsync.RoSnapshots, *libstate.AggregatorV3, error) {
 	allSnapshots := snapshotsync.NewRoSnapshots(snConfig, dirs.Snap)
 	var err error
 	if !snConfig.NoDownloader {
 		allSnapshots.OptimisticalyReopenWithDB(s.chainDB)
 	}
-	blockReader := snapshotsync.NewBlockReaderWithSnapshots(allSnapshots)
+	blockReader := snapshotsync.NewBlockReaderWithSnapshots(allSnapshots, transactionsV3)
 
 	if !snConfig.NoDownloader {
 		if snConfig.DownloaderAddr != "" {
@@ -870,7 +876,7 @@ func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snCo
 			s.downloaderClient, err = downloadergrpc.NewClient(ctx, snConfig.DownloaderAddr)
 		} else {
 			// start embedded Downloader
-			s.downloader, err = downloader3.New(downloaderCfg)
+			s.downloader, err = downloader3.New(ctx, downloaderCfg)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -892,10 +898,24 @@ func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snCo
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	fmt.Printf("dbg reop: %s\n", dbg.Stack())
-	if err = agg.ReopenFiles(); err != nil {
+	if err = agg.OpenFolder(); err != nil {
 		return nil, nil, nil, err
 	}
+	agg.OnFreeze(func(frozenFileNames []string) {
+		events := s.notifications.Events
+		events.OnNewSnapshot()
+		if s.downloaderClient != nil {
+			req := &proto_downloader.DownloadRequest{Items: make([]*proto_downloader.DownloadItem, 0, len(frozenFileNames))}
+			for _, fName := range frozenFileNames {
+				req.Items = append(req.Items, &proto_downloader.DownloadItem{
+					Path: filepath.Join("history", fName),
+				})
+			}
+			if _, err := s.downloaderClient.Download(ctx, req); err != nil {
+				log.Warn("[snapshots] notify downloader", "err", err)
+			}
+		}
+	})
 
 	return blockReader, allSnapshots, agg, nil
 }
@@ -917,7 +937,7 @@ func (s *Ethereum) Peers(ctx context.Context) (*remote.PeersReply, error) {
 func (s *Ethereum) Protocols() []p2p.Protocol {
 	protocols := make([]p2p.Protocol, 0, len(s.sentryServers))
 	for i := range s.sentryServers {
-		protocols = append(protocols, s.sentryServers[i].Protocol)
+		protocols = append(protocols, s.sentryServers[i].Protocols...)
 	}
 	return protocols
 }
