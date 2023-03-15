@@ -6,6 +6,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/cli"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/commands"
+	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/evmlytics"
 	"github.com/ledgerwatch/erigon/consensus/ethash"
 	"github.com/ledgerwatch/erigon/turbo/logging"
 	"github.com/ledgerwatch/log/v3"
@@ -27,6 +28,10 @@ func main() {
 		if borDb != nil {
 			defer borDb.Close()
 		}
+
+		// Start the routine that reads all ETH blocks from 0 till latest Block
+		// TODO:
+		go evmlytics.StartReadingBlocks(ctx, db, borDb, backend, txPool, mining, stateCache, blockReader, ff, agg, err)
 
 		// TODO: Replace with correct consensus Engine
 		engine := ethash.NewFaker()
