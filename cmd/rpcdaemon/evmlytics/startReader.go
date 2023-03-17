@@ -8,10 +8,10 @@ https://github.com/ClickHouse/clickhouse-go#native-interface
 Use the columnar insert: https://github.com/ClickHouse/clickhouse-go/blob/main/examples/clickhouse_api/columnar_insert.go
 
 ISSUES:
-Why is transactions number in the fpritn always 0?
+Decimals 38 to big Int
+https://github.com/ClickHouse/clickhouse-go/blob/main/examples/clickhouse_api/big_int.go
+
 Why are data not stored (0 rows) created after batch.send()
-
-
 
 2, Try to run this function in paralel goroutines
 3, Update Go to 18.4 to use the clickhouse-go version 2.3
@@ -27,6 +27,7 @@ package evmlytics
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -119,9 +120,9 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 
 	// Go through all the Blocks from 0 to latest
 	var batchSize = uint64(1000)
-	highestBlockNum = uint64(15541)
+	highestBlockNum = uint64(15348627)
 
-	for blockNum := uint64(0); blockNum < highestBlockNum; blockNum += batchSize {
+	for blockNum := uint64(15338627); blockNum < highestBlockNum; blockNum += batchSize {
 		// Start and end of the current batch
 		endOfCurrentBatch := blockNum + batchSize
 		if endOfCurrentBatch > highestBlockNum {
@@ -140,27 +141,25 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 		// Create always a batch of blocks and send it to clickhouse
 
 		var (
-			numbers []uint32
-			/*
-				hashes            []string
-				parentHashes      []string
-				nonces            []string
-				sha3UnclesList    []string
-				logsBlooms        []string
-				transactionsRoots []string
-				stateRoots        []string
-				receiptsRoots     []string
-				miners            []string
-				difficulties      []*big.Int
-				totalDifficulties []*big.Int
-				sizes             []uint32
-				extraDataList     []string
-				gasLimits         []uint32
-				gasUsages         []uint32
-				timestamps        []time.Time
-				transactionCounts []uint16
-				baseFeePerGasList []uint64
-			*/
+			numbers           []uint32
+			hashes            []string
+			parentHashes      []string
+			nonces            []string
+			sha3UnclesList    []string
+			logsBlooms        []string
+			transactionsRoots []string
+			stateRoots        []string
+			receiptsRoots     []string
+			miners            []string
+			difficulties      []*big.Int
+			totalDifficulties []*big.Int
+			sizes             []uint32
+			extraDataList     []string
+			gasLimits         []uint32
+			gasUsages         []uint32
+			timestamps        []time.Time
+			transactionCounts []uint16
+			baseFeePerGasList []uint64
 		)
 
 		// ----- Internal FOR loop -----
@@ -168,7 +167,7 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 		for blockCount := uint64(blockNum); blockCount < endOfCurrentBatch; blockCount++ {
 			// Read one block and append it
 
-			hash, hashErr := rawdb.ReadCanonicalHash(tx, blockNum)
+			hash, hashErr := rawdb.ReadCanonicalHash(tx, blockCount)
 			if hashErr != nil {
 				return nil, hashErr
 			}
@@ -179,17 +178,108 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 				numbers = append(numbers, uint32(block.Number().Uint64()))
 				fmt.Printf("Processing block number %d trans.len: %d numbers.len: %d\n", block.Number(), block.Transactions().Len(), len(numbers))
 
+				hashes = append(hashes, "")
+				parentHashes = append(parentHashes, "")
+				nonces = append(nonces, "")
+				sha3UnclesList = append(sha3UnclesList, "")
+				logsBlooms = append(logsBlooms, "")
+				transactionsRoots = append(transactionsRoots, "")
+				stateRoots = append(stateRoots, "")
+				receiptsRoots = append(receiptsRoots, "")
+				miners = append(miners, "")
+
+				difficulties = append(difficulties, big.NewInt(0))
+				totalDifficulties = append(totalDifficulties, big.NewInt(0))
+				sizes = append(sizes, 0)
+				extraDataList = append(extraDataList, "")
+				gasLimits = append(gasLimits, 0)
+				gasUsages = append(gasUsages, 0)
+				timestamps = append(timestamps, time.Now())
+				transactionCounts = append(transactionCounts, 0)
+				baseFeePerGasList = append(baseFeePerGasList, 0)
+
 			}
 		}
 		// ----- END -----
 
-		//
 		if err := batch.Column(0).Append(numbers); err != nil {
 			return nil, err
 		}
 
+		/*
+			if err := batch.Column(0).Append(numbers); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(1).Append(hashes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(2).Append(parentHashes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(3).Append(nonces); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(4).Append(sha3UnclesList); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(5).Append(logsBlooms); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(6).Append(transactionsRoots); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(7).Append(miners); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(8).Append(difficulties); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(9).Append(totalDifficulties); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(10).Append(sizes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(11).Append(extraDataList); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(12).Append(gasLimits); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(13).Append(gasUsages); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(14).Append(timestamps); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(15).Append(transactionCounts); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(16).Append(baseFeePerGasList); err != nil {
+				return nil, err
+			}
+		*/
+
 		// Send the batch
-		batch.Send()
+		if err = batch.Send(); err != nil {
+			return nil, err
+		}
 
 	}
 
