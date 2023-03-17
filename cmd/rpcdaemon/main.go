@@ -31,7 +31,7 @@ func main() {
 
 		// Start the routine that reads all ETH blocks from 0 till latest Block
 		// TODO:
-		go evmlytics.StartReadingBlocks(ctx, db, borDb, backend, txPool, mining, stateCache, blockReader, ff, agg, err)
+		go evmlytics.StartReadingBlocks(ctx, db, borDb, backend, txPool, mining, stateCache, blockReader, ff, agg)
 
 		// TODO: Replace with correct consensus Engine
 		engine := ethash.NewFaker()
