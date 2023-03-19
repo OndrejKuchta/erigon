@@ -27,7 +27,6 @@ package evmlytics
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -45,6 +44,7 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/rpchelper"
 	"github.com/ledgerwatch/erigon/turbo/services"
 	"github.com/ledgerwatch/log/v3"
+	"github.com/shopspring/decimal"
 	"go.uber.org/atomic"
 )
 
@@ -151,8 +151,8 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 			stateRoots        []string
 			receiptsRoots     []string
 			miners            []string
-			difficulties      []*big.Int
-			totalDifficulties []*big.Int
+			difficulties      []decimal.Decimal
+			totalDifficulties []decimal.Decimal
 			sizes             []uint32
 			extraDataList     []string
 			gasLimits         []uint32
@@ -188,8 +188,9 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 				receiptsRoots = append(receiptsRoots, "")
 				miners = append(miners, "")
 
-				difficulties = append(difficulties, big.NewInt(0))
-				totalDifficulties = append(totalDifficulties, big.NewInt(0))
+				difficulties = append(difficulties, decimal.New(38, 0))
+				totalDifficulties = append(totalDifficulties, decimal.New(38, 0))
+
 				sizes = append(sizes, 0)
 				extraDataList = append(extraDataList, "")
 				gasLimits = append(gasLimits, 0)
@@ -206,75 +207,77 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 			return nil, err
 		}
 
-		/*
-			if err := batch.Column(0).Append(numbers); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(1).Append(hashes); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(1).Append(hashes); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(2).Append(parentHashes); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(2).Append(parentHashes); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(3).Append(nonces); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(3).Append(nonces); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(4).Append(sha3UnclesList); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(4).Append(sha3UnclesList); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(5).Append(logsBlooms); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(5).Append(logsBlooms); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(6).Append(transactionsRoots); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(6).Append(transactionsRoots); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(7).Append(stateRoots); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(7).Append(miners); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(8).Append(receiptsRoots); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(8).Append(difficulties); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(9).Append(miners); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(9).Append(totalDifficulties); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(10).Append(difficulties); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(10).Append(sizes); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(11).Append(totalDifficulties); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(11).Append(extraDataList); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(12).Append(sizes); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(12).Append(gasLimits); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(13).Append(extraDataList); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(13).Append(gasUsages); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(14).Append(gasLimits); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(14).Append(timestamps); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(15).Append(gasUsages); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(15).Append(transactionCounts); err != nil {
-				return nil, err
-			}
+		if err := batch.Column(16).Append(timestamps); err != nil {
+			return nil, err
+		}
 
-			if err := batch.Column(16).Append(baseFeePerGasList); err != nil {
-				return nil, err
-			}
-		*/
+		if err := batch.Column(17).Append(transactionCounts); err != nil {
+			return nil, err
+		}
+
+		if err := batch.Column(18).Append(baseFeePerGasList); err != nil {
+			return nil, err
+		}
 
 		// Send the batch
 		if err = batch.Send(); err != nil {
