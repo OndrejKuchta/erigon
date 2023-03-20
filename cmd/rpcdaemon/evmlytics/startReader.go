@@ -7,16 +7,15 @@
 https://github.com/ClickHouse/clickhouse-go#native-interface
 Use the columnar insert: https://github.com/ClickHouse/clickhouse-go/blob/main/examples/clickhouse_api/columnar_insert.go
 
-ISSUES:
-Decimals 38 to big Int
-https://github.com/ClickHouse/clickhouse-go/blob/main/examples/clickhouse_api/big_int.go
 
-Why are data not stored (0 rows) created after batch.send()
+Calculate tottalDifficulty
+Implement getLogs to get all logs and traces as well
 
+Optional:
 2, Try to run this function in paralel goroutines
 3, Update Go to 18.4 to use the clickhouse-go version 2.3
 
-Implement getLogs to get all logs and traces as well
+
 
 
 
@@ -178,26 +177,34 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 				numbers = append(numbers, uint32(block.Number().Uint64()))
 				fmt.Printf("Processing block number %d trans.len: %d numbers.len: %d\n", block.Number(), block.Transactions().Len(), len(numbers))
 
-				hashes = append(hashes, "")
-				parentHashes = append(parentHashes, "")
-				nonces = append(nonces, "")
-				sha3UnclesList = append(sha3UnclesList, "")
-				logsBlooms = append(logsBlooms, "")
+				hashes = append(hashes, block.Hash().String())
+				parentHashes = append(parentHashes, block.ParentHash().String())
+				timestamps = append(timestamps, time.Unix(0, int64(block.Time())))
+				difficulties = append(difficulties, decimal.NewFromBigInt(block.Difficulty(), 0))
+
+				sizes = append(sizes, uint32(block.Size()))
+				extraDataList = append(extraDataList, string(block.Extra()))
+				gasLimits = append(gasLimits, uint32(block.GasLimit()))
+				gasUsages = append(gasUsages, uint32(block.GasUsed()))
+				transactionCounts = append(transactionCounts, uint16(block.Transactions().Len()))
+				baseFeePerGasList = append(baseFeePerGasList, block.BaseFee().Uint64())
+
+				// TODO: Problemove
+
+				nonces = append(nonces, string(block.Nonce()))
+				sha3UnclesList = append(sha3UnclesList, block.UncleHash().String())
+				logsBlooms = append(logsBlooms, string(block.Bloom()))
 				transactionsRoots = append(transactionsRoots, "")
 				stateRoots = append(stateRoots, "")
 				receiptsRoots = append(receiptsRoots, "")
 				miners = append(miners, "")
 
-				difficulties = append(difficulties, decimal.New(38, 0))
-				totalDifficulties = append(totalDifficulties, decimal.New(38, 0))
-
-				sizes = append(sizes, 0)
-				extraDataList = append(extraDataList, "")
-				gasLimits = append(gasLimits, 0)
-				gasUsages = append(gasUsages, 0)
-				timestamps = append(timestamps, time.Now())
-				transactionCounts = append(transactionCounts, 0)
-				baseFeePerGasList = append(baseFeePerGasList, 0)
+				// Additional fields
+				td, err := rawdb.ReadTd(tx, block.Hash(), block.NumberU64())
+				if err != nil {
+					return nil, err
+				}
+				totalDifficulties = append(totalDifficulties, decimal.NewFromBigInt(td, 0))
 
 			}
 		}
