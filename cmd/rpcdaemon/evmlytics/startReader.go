@@ -17,8 +17,6 @@ Optional:
 
 
 
-
-
 */
 
 package evmlytics
@@ -139,7 +137,7 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 
 		// Create always a batch of blocks and send it to clickhouse
 
-		var (
+		type BlockData struct {
 			numbers           []uint32
 			hashes            []string
 			parentHashes      []string
@@ -159,7 +157,9 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 			timestamps        []time.Time
 			transactionCounts []uint16
 			baseFeePerGasList []uint64
-		)
+		}
+
+		blockData := BlockData{}
 
 		// ----- Internal FOR loop -----
 
@@ -174,122 +174,149 @@ func StartReadingBlocks(ctx context.Context, db kv.RoDB, borDb kv.RoDB,
 			block, _, err := blockReader.BlockWithSenders(ctx, tx, hash, blockCount)
 			if err == nil && block != nil {
 				// Store block data to arrays
-				numbers = append(numbers, uint32(block.Number().Uint64()))
-				fmt.Printf("Processing block number %d trans.len: %d numbers.len: %d\n", block.Number(), block.Transactions().Len(), len(numbers))
+				blockData.numbers = append(blockData.numbers, uint32(block.Number().Uint64()))
+				fmt.Printf("Processing block number %d trans.len: %d numbers.len: %d\n", block.Number(), block.Transactions().Len(), len(blockData.numbers))
 
-				hashes = append(hashes, block.Hash().String())
-				parentHashes = append(parentHashes, block.ParentHash().String())
-				timestamps = append(timestamps, time.Unix(0, int64(block.Time())))
-				difficulties = append(difficulties, decimal.NewFromBigInt(block.Difficulty(), 0))
+				blockData.hashes = append(blockData.hashes, block.Hash().String())
+				blockData.parentHashes = append(blockData.parentHashes, block.ParentHash().String())
+				blockData.timestamps = append(blockData.timestamps, time.Unix(0, int64(block.Time())))
+				blockData.difficulties = append(blockData.difficulties, decimal.NewFromBigInt(block.Difficulty(), 0))
 
-				sizes = append(sizes, uint32(block.Size()))
-				extraDataList = append(extraDataList, string(block.Extra()))
-				gasLimits = append(gasLimits, uint32(block.GasLimit()))
-				gasUsages = append(gasUsages, uint32(block.GasUsed()))
-				transactionCounts = append(transactionCounts, uint16(block.Transactions().Len()))
-				baseFeePerGasList = append(baseFeePerGasList, block.BaseFee().Uint64())
+				blockData.sizes = append(blockData.sizes, uint32(block.Size()))
+				blockData.extraDataList = append(blockData.extraDataList, string(block.Extra()))
+				blockData.gasLimits = append(blockData.gasLimits, uint32(block.GasLimit()))
+				blockData.gasUsages = append(blockData.gasUsages, uint32(block.GasUsed()))
+				blockData.transactionCounts = append(blockData.transactionCounts, uint16(block.Transactions().Len()))
+				blockData.baseFeePerGasList = append(blockData.baseFeePerGasList, block.BaseFee().Uint64())
 
 				// TODO: Problemove
 
-				nonces = append(nonces, string(block.Nonce()))
-				sha3UnclesList = append(sha3UnclesList, block.UncleHash().String())
-				logsBlooms = append(logsBlooms, string(block.Bloom()))
-				transactionsRoots = append(transactionsRoots, "")
-				stateRoots = append(stateRoots, "")
-				receiptsRoots = append(receiptsRoots, "")
-				miners = append(miners, "")
+				// nonces = append(nonces, string(block.Nonce()))
+				blockData.nonces = append(blockData.nonces, "")
+				blockData.sha3UnclesList = append(blockData.sha3UnclesList, block.UncleHash().String())
+				// logsBlooms = append(logsBlooms, string(block.Bloom()))
+				blockData.logsBlooms = append(blockData.logsBlooms, "")
+				blockData.transactionsRoots = append(blockData.transactionsRoots, "")
+				blockData.stateRoots = append(blockData.stateRoots, "")
+				blockData.receiptsRoots = append(blockData.receiptsRoots, "")
+				blockData.miners = append(blockData.miners, "")
 
 				// Additional fields
 				td, err := rawdb.ReadTd(tx, block.Hash(), block.NumberU64())
 				if err != nil {
 					return nil, err
 				}
-				totalDifficulties = append(totalDifficulties, decimal.NewFromBigInt(td, 0))
+				blockData.totalDifficulties = append(blockData.totalDifficulties, decimal.NewFromBigInt(td, 0))
 
 			}
 		}
 		// ----- END -----
 
-		if err := batch.Column(0).Append(numbers); err != nil {
-			return nil, err
+		dataArrays := []interface{}{
+			blockData.numbers, blockData.hashes, blockData.parentHashes, blockData.nonces,
+			blockData.sha3UnclesList, blockData.logsBlooms, blockData.transactionsRoots,
+			blockData.stateRoots, blockData.receiptsRoots, blockData.miners,
+			blockData.difficulties, blockData.totalDifficulties, blockData.sizes,
+			blockData.extraDataList, blockData.gasLimits, blockData.gasUsages,
+			blockData.timestamps, blockData.transactionCounts, blockData.baseFeePerGasList,
 		}
 
-		if err := batch.Column(1).Append(hashes); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(2).Append(parentHashes); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(3).Append(nonces); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(4).Append(sha3UnclesList); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(5).Append(logsBlooms); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(6).Append(transactionsRoots); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(7).Append(stateRoots); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(8).Append(receiptsRoots); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(9).Append(miners); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(10).Append(difficulties); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(11).Append(totalDifficulties); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(12).Append(sizes); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(13).Append(extraDataList); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(14).Append(gasLimits); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(15).Append(gasUsages); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(16).Append(timestamps); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(17).Append(transactionCounts); err != nil {
-			return nil, err
-		}
-
-		if err := batch.Column(18).Append(baseFeePerGasList); err != nil {
-			return nil, err
+		for i, dataArray := range dataArrays {
+			if err := batch.Column(i).Append(dataArray); err != nil {
+				return nil, err
+			}
 		}
 
 		// Send the batch
 		if err = batch.Send(); err != nil {
 			return nil, err
 		}
+
+		//OLD WAY but with error check per column, great for debuging
+
+		/*
+
+			if err := batch.Column(0).Append(numbers); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(1).Append(hashes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(2).Append(parentHashes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(3).Append(nonces); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(4).Append(sha3UnclesList); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(5).Append(logsBlooms); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(6).Append(transactionsRoots); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(7).Append(stateRoots); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(8).Append(receiptsRoots); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(9).Append(miners); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(10).Append(difficulties); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(11).Append(totalDifficulties); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(12).Append(sizes); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(13).Append(extraDataList); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(14).Append(gasLimits); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(15).Append(gasUsages); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(16).Append(timestamps); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(17).Append(transactionCounts); err != nil {
+				return nil, err
+			}
+
+			if err := batch.Column(18).Append(baseFeePerGasList); err != nil {
+				return nil, err
+			}
+
+			// Send the batch
+			if err = batch.Send(); err != nil {
+				return nil, err
+			}
+		*/
 
 	}
 
